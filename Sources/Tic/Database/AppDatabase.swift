@@ -14,23 +14,30 @@ final class AppDatabase: Sendable {
 
     // MARK: - Setup
 
-    /// `~/Library/Application Support/Tic/` — home of the database and the MCP socket.
+    /// Root of every on-disk artifact (database, MCP socket, backups).
+    ///
+    /// A development build (see `Environment` in `AppEnvironment.swift`) uses a *separate* folder
+    /// so a second-dev checkout can never read or erase the user's real Tic data. Release builds
+    /// keep the original `~/Library/Application Support/Tic/` path, so upgrading in place is safe.
     static func supportDirectory() throws -> URL {
         let fm = FileManager.default
         let appSupport = try fm.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
         )
-        let dir = appSupport.appendingPathComponent("Tic", isDirectory: true)
+        let dir = appSupport.appendingPathComponent(Environment.current.supportDirectoryName, isDirectory: true)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
 
-    /// The shared on-disk database at `~/Library/Application Support/Tic/tic.sqlite`.
+    /// The shared on-disk database at `~/Library/Application Support/<support dir>/tic.sqlite`.
     static func makeShared() throws -> AppDatabase {
         let dbURL = try supportDirectory().appendingPathComponent("tic.sqlite")
-
-        let db = try AppDatabase(try DatabaseQueue(path: dbURL.path))
+        let queue = try DatabaseQueue(path: dbURL.path)
+        // Snapshot the *pre-migration* database before the migrator touches it, so a new schema has a
+        // genuinely recoverable "before" copy next to it. (Done before `init`, which runs migrations.)
+        try snapshot(queue)
+        let db = try AppDatabase(queue)
         try db.seedSampleDataIfEmpty()
         return db
     }
@@ -42,14 +49,23 @@ final class AppDatabase: Sendable {
 
     var path: String { dbQueue.path }
 
+    /// The path the *real* (release) Tic database would live at, regardless of the current build's
+    /// environment — used to warn a dev build when it is pointed at real data.
+    static func releaseDatabasePath() -> URL? {
+        try? FileManager.default
+            .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
+            .appendingPathComponent("Tic", isDirectory: true)
+            .appendingPathComponent("tic.sqlite")
+    }
+
     // MARK: - Migrations
 
     private var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
-        #if DEBUG
-        // During development, wipe and rebuild when the schema changes instead of crashing.
-        migrator.eraseDatabaseOnSchemaChange = true
-        #endif
+        // Never wipe a real database automatically — not even in DEBUG. Auto-erasing on schema
+        // change would destroy a developer's or user's data on the next launch. Instead a migration
+        // failure is fatal-and-visible, and `backUpBeforeMigration()` below leaves a recoverable
+        // copy. (Previously `eraseDatabaseOnSchemaChange = true` under `#if DEBUG`.)
 
         migrator.registerMigration("v1_notes_and_tasks") { db in
             try db.create(table: "note") { t in
@@ -121,6 +137,63 @@ final class AppDatabase: Sendable {
 
         return migrator
     }
+
+    // MARK: - Backup
+
+    /// Folder holding rotating pre-migration snapshots, beside the database.
+    static func backupDirectory() throws -> URL {
+        let dir = try supportDirectory().appendingPathComponent("Backups", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Takes a consistent snapshot of the live database into `Backups/tic-<timestamp>.sqlite` and
+    /// keeps the newest `retainedBackups`. Uses SQLite's online backup API (via GRDB), so it is safe
+    /// while the database is open with a WAL — a plain file copy would not be. No-op for in-memory
+    /// databases (tests) and for a brand-new file that has no data yet.
+    func backUpBeforeMigration(retaining retainedBackups: Int = 5) throws {
+        try Self.snapshot(dbQueue, retaining: retainedBackups)
+    }
+
+    /// Snapshots an on-disk queue into `Backups/tic-<timestamp>.sqlite`, keeping the newest
+    /// `retainedBackups`. Safe to call *before* migrations (the queue need not be migrated yet) and
+    /// while the database is open with a WAL. No-op for in-memory queues or a not-yet-created file.
+    static func snapshot(_ queue: DatabaseQueue, retaining retainedBackups: Int = 5) throws {
+        try snapshot(queue, into: try backupDirectory(), retaining: retainedBackups)
+    }
+
+    /// The testable core of `snapshot(_:retaining:)`: same behaviour, but the destination folder is
+    /// supplied (so tests never touch Application Support).
+    static func snapshot(_ queue: DatabaseQueue, into dir: URL, retaining retainedBackups: Int = 5) throws {
+        guard queue.path != ":memory:" else { return }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: queue.path) else { return }
+        // Skip a brand-new, never-written database: an empty snapshot is noise.
+        let size = (try? fm.attributesOfItem(atPath: queue.path))?[.size] as? Int ?? 0
+        guard size > 0 else { return }
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let stamp = backupTimestampFormatter.string(from: Date())
+        let destination = dir.appendingPathComponent("tic-\(stamp).sqlite")
+
+        let backupQueue = try DatabaseQueue(path: destination.path)
+        try queue.backup(to: backupQueue)
+
+        // Prune the oldest snapshots beyond the retention window.
+        let snapshots = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
+            .filter { $0.lastPathComponent.hasPrefix("tic-") && $0.pathExtension == "sqlite" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+        for stale in snapshots.dropLast(max(1, retainedBackups)) {
+            try? fm.removeItem(at: stale)
+        }
+    }
+
+    private static let backupTimestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f
+    }()
 
     // MARK: - Notes
 

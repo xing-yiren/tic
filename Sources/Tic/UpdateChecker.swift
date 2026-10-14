@@ -30,8 +30,10 @@ final class UpdateChecker {
     /// disables the checker entirely.
     let currentVersion: String?
 
-    private nonisolated static let latestReleaseURL =
-        URL(string: "https://api.github.com/repos/kasvith/tic/releases/latest")!
+    private nonisolated static var latestReleaseURL: URL {
+        let env = Environment.current
+        return URL(string: "https://api.github.com/repos/\(env.updateFeedOwner)/\(env.updateFeedRepo)/releases/latest")!
+    }
     private static let interval: TimeInterval = 24 * 60 * 60
     private static let notifiedVersionKey = "updateNotifiedVersion"
     private static let seenVersionKey = "updateSeenVersion"

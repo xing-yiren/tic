@@ -195,7 +195,7 @@ struct NoteHeaderView: View {
     }
 
     private var collapseButton: some View {
-        iconButton(systemName: "chevron.up", isActive: false, help: "Roll up") {
+        iconButton(systemName: "chevron.up", isActive: false, help: "Roll up (collapse)") {
             controller.toggleCollapsed()
         }
     }

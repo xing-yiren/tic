@@ -33,6 +33,7 @@ struct NoteView: View {
 
     @State private var titleText: String
     @State private var revealed = false
+    @State private var collapsedBarHovering = false
     @State private var draggingTaskID: TaskItem.ID?
     @State private var dragOffsetY: CGFloat = 0
     @State private var dropIndex: Int?
@@ -87,11 +88,14 @@ struct NoteView: View {
 
     private var collapsedBar: some View {
         let remaining = controller.tasks.filter { !$0.isDone }.count
+        // The label is passive — each element disables hit testing so clicks fall through to the drag
+        // handle layered behind — while the expand button stays live (it's in front of that handle).
         return HStack(spacing: 8) {
             Text(note.title.isEmpty ? "Untitled List" : note.title)
                 .font(.headline.weight(.semibold))
                 .foregroundStyle(theme.title)
                 .lineLimit(1)
+                .allowsHitTesting(false)
 
             Spacer(minLength: 8)
 
@@ -102,13 +106,35 @@ struct NoteView: View {
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
                     .background(Capsule().fill(theme.accent.opacity(0.18)))
+                    .allowsHitTesting(false)
             }
+
+            // A clear, clickable "expand" affordance (rather than only the hidden double-click), so
+            // it's obvious you can pull a rolled-up note back down. Revealed on hover of the bar.
+            Button(action: expandNote) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(theme.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Expand")
+            .opacity(collapsedBarHovering ? 1 : 0)
+            .animation(.easeInOut(duration: 0.12), value: collapsedBarHovering)
         }
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .allowsHitTesting(false)   // let the drag handle below receive all clicks
-        .background(WindowMoveArea { controller.toggleCollapsed() })
-        .help("Drag to move · double-click to expand")
+        .background(WindowMoveArea.Hovering(
+            onDoubleClick: expandNote,
+            isHovering: $collapsedBarHovering
+        ))
+    }
+
+    /// Pull a rolled-up note back down. Also wired to a double-click on the bar (macOS title-bar
+    /// convention), since a double-click on a collapsed note can only ever mean "expand".
+    private func expandNote() {
+        controller.toggleCollapsed()
     }
 
     // MARK: - Expanded body

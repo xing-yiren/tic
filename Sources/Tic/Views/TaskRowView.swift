@@ -107,6 +107,13 @@ struct TaskRowView: View {
         .padding(.vertical, 2)
         .padding(.leading, CGFloat(task.indentLevel) * NoteLayout.indentStep)
         .contentShape(Rectangle())
+        // The deadline/reminder popover is anchored to the *row* rather than to the hover-revealed
+        // calendar button or the deadline chip. Those controls mount and unmount as the pointer
+        // moves (and as `hasScheduling` flips), and a popover whose anchor disappears is torn down —
+        // so moving the mouse toward the popover, or setting a deadline that makes the chip appear
+        // and shift the layout, used to make it vanish mid-interaction. The row itself is always in
+        // the hierarchy, so the popover stays put until the user dismisses it.
+        .popover(isPresented: $showDueEditor, arrowEdge: .bottom) { dueEditor }
             // Begin editing whenever this becomes (or re-becomes, after a scroll recreates the row)
             // the active add target. `beginEditing` is a no-op once already editing, so a plain
             // re-render won't disturb an in-progress edit — only a fresh appearance re-triggers it.
@@ -143,7 +150,6 @@ struct TaskRowView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Deadline & reminder")
-                    .popover(isPresented: $showDueEditor, arrowEdge: .bottom) { dueEditor }
                 }
                 Button(action: onDelete) {
                     Image(systemName: "xmark.circle.fill")
@@ -183,7 +189,6 @@ struct TaskRowView: View {
         }
         .buttonStyle(.plain)
         .help("Deadline & reminder")
-        .popover(isPresented: $showDueEditor, arrowEdge: .bottom) { dueEditor }
     }
 
     private var chipColor: Color {

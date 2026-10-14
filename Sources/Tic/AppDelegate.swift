@@ -18,6 +18,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+
+
+    // MARK: - Notification actions
+
+
+
+
+
+
     /// ⌘N → New Note while Tic is the active app. A menu-style `MenuBarExtra` button's
     /// `keyboardShortcut` only fires while that menu is open, so we dispatch it ourselves via a
     /// local key monitor (fires whenever any Tic window is key).
@@ -55,8 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Update-banner delegate: show it even while Tic is frontmost (macOS hides a frontmost app's
-/// notifications by default), and a click opens the release page.
+// Notification presentation + click/action routing is owned by `NotificationRouterDelegate`
+// (services/NotificationRouter.swift), shared by the update banner and task reminders.
+
+
 extension AppDelegate: UNUserNotificationCenterDelegate {
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter, willPresent notification: UNNotification

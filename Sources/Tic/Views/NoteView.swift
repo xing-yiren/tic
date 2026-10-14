@@ -181,6 +181,10 @@ struct NoteView: View {
                 // An agent (or another writer) renamed the note: reflect it unless the user is mid-edit.
                 if !titleFocused { titleText = newTitle }
             }
+            .onChange(of: controller.titleFocusRequest) { _, _ in
+                // A freshly created note asks to be typed into: drop the caret in the title.
+                titleFocused = true
+            }
             .overlay(alignment: .top) {
                 if display.isEmpty {
                     Text(controller.tasks.isEmpty

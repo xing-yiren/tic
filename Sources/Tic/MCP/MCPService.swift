@@ -18,6 +18,8 @@ final class MCPService: @unchecked Sendable {
     private let database: AppDatabase
     /// Window pokes (open/close/move a note's panel), supplied by `AppModel` so this stays AppKit-free.
     var windowActions = MCPTools.WindowActions()
+    /// both supplied by `AppModel` so MCP creation honours the same rules as the UI.
+    var newNotePolicy: @Sendable () async -> MCPTools.NewNotePolicy = { MCPTools.NewNotePolicy() }
     /// Listener callbacks land here; `listener` and `sessions` are touched only on it.
     private let queue = DispatchQueue(label: "tic.mcp")
     private var listener: NWListener?

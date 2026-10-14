@@ -38,6 +38,9 @@ final class NoteController {
     /// Asks the manager to show a task's image (by task id) in the image window.
     @ObservationIgnored var onOpenImage: ((UUID) -> Void)?
 
+    /// Bumped to ask the note's title field to take the keyboard (e.g. a freshly created note).
+    private(set) var titleFocusRequest = 0
+
     init(note: Note, database: AppDatabase) {
         self.noteID = note.id
         self.note = note
@@ -190,6 +193,16 @@ final class NoteController {
         onOpenImage?(task.id)
     }
 
+    // MARK: - Resources
+
+
+
+
+
+
+
+
+
     /// The task's stored image at full resolution, uncropped — decoded off the main actor.
     func fullImage(taskId id: UUID) async -> CGImage? {
         guard let data = try? await db.taskImageData(taskId: id) else { return nil }
@@ -316,6 +329,13 @@ final class NoteController {
         guard reordered != tasks else { return }   // no reorder and no re-nest → nothing to do
         applyStructural(TaskOutline.normalizedLevels(reordered), reorder: true)
     }
+
+    // MARK: - Deadlines & reminders
+
+
+
+
+
 
     // MARK: - Structural helpers
 
@@ -500,6 +520,14 @@ extension NoteController {
     func requestClose() {
         onClose?()
     }
+
+    /// Asks the note's title field to take focus (a freshly created note should be ready to type in).
+    func requestTitleFocus() {
+        titleFocusRequest += 1
+    }
+
+    // MARK: - Category
+
 
     /// Creates a new, separate note.
     func requestNewNote() {

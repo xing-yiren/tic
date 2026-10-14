@@ -33,6 +33,7 @@ struct TaskRowView: View {
     @State private var draft: String
     @State private var editing = false
     @State private var hovering = false
+    @State private var showDueEditor = false
     // Memoises the parsed Markdown so it isn't re-parsed on every re-render (e.g. each frame of a
     // drag), which otherwise makes reordering feel laggy.
     @State private var renderCache = MarkdownRenderCache()
@@ -129,6 +130,15 @@ struct TaskRowView: View {
         }
         .contentShape(Rectangle())
     }
+
+    // MARK: - Deadline & reminder
+
+
+
+
+
+
+
 
     @ViewBuilder
     private var content: some View {

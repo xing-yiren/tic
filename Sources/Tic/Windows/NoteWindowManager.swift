@@ -25,6 +25,18 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// The note whose image the image window is showing, so closing that note closes it too.
     private var imageWindowNoteID: UUID?
 
+    /// Window behaviour a freshly created note inherits (float-on-top / all-Spaces defaults). Set by
+    /// `AppModel` from `NotePreferences`; changing it never rewrites existing notes.
+    var newNoteDefaults: NewNoteDefaults = .default
+
+
+
+
+
+
+
+
+
     init(appDatabase: AppDatabase) {
         self.appDatabase = appDatabase
         super.init()
@@ -107,14 +119,26 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         return panel
     }
 
+
+    // MARK: - Category filter / visibility coordination
+
+
+
+
+
     /// Creates a fresh note (cascaded so it doesn't sit exactly on top of the last) and opens it.
     /// The DB assigns a unique, monotonic `sortIndex`; the cascade offset derives from that index
     /// (not the open-panel count), so placement and ordering stay stable after closes/deletes.
+    /// The new note inherits the app-wide float/all-Spaces defaults and the current single selected
     func newNote() async {
         do {
-            let inserted = try await appDatabase.insertNewNote(
-                Note(color: NoteColor.allCases.randomElement() ?? .yellow)
+            let defaults = newNoteDefaults
+            var fresh = Note(
+                color: NoteColor.allCases.randomElement() ?? .yellow,
+                floatOnTop: defaults.floatOnTop,
+                showOnAllSpaces: defaults.showOnAllSpaces
             )
+            let inserted = try await appDatabase.insertNewNote(fresh)
             let step = Double(inserted.sortIndex % 8) * 28
             var note = inserted
             note.frameX = 180 + step
@@ -123,7 +147,11 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
                 id: note.id, x: note.frameX, y: note.frameY,
                 width: note.frameW, height: note.frameH
             )
-            openNote(note)
+            let panel = openNote(note)
+            // Actively created → take focus and let the user start typing the title right away.
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+            controllers[note.id]?.requestTitleFocus()
         } catch {
             NSLog("[Tic] newNote failed: \(error)")
         }

@@ -25,6 +25,16 @@ struct MCPTools: Sendable {
     private static let maxTextLength = 20_000
     private static let maxImageBytes = 10 * 1024 * 1024
 
+
+    /// note should land in), read at creation time. The plan's rule is that every creation entry
+    /// point — menu bar, Dock, the note "+", MCP — shares one default, so this closure reads the
+    /// live preference rather than a copy. Set by the MCP service; defaults in isolated tests.
+    struct NewNotePolicy: Sendable {
+        var defaults: NewNoteDefaults = .default
+    }
+
+    var newNotePolicy: @Sendable () async -> NewNotePolicy = { NewNotePolicy() }
+
     // MARK: - Dispatch
 
     func call(_ name: String, _ arguments: [String: Value]?) async -> CallTool.Result {
@@ -80,13 +90,16 @@ struct MCPTools: Sendable {
     }
 
     private func createNote(_ args: Args) async throws -> Value {
+        // Read the *current* app-wide policy so an agent that omits the flags gets the same
+        // behaviour as the UI (the plan's rule); an explicit value is preserved via `?? policy`.
+        let policy = await newNotePolicy()
         let stored = try await database.insertNewNote(Note(
             title: (args.string("title") ?? "").trimmed.capped,
             color: try args.string("color").map(color) ?? .yellow,
             material: try args.string("material").map(material) ?? .solid,
-            floatOnTop: args.bool("float_on_top") ?? false,
-            showOnAllSpaces: args.bool("show_on_all_spaces") ?? false,
-            isCollapsed: args.bool("collapsed") ?? false
+            floatOnTop: args.bool("float_on_top") ?? policy.defaults.floatOnTop,
+            showOnAllSpaces: args.bool("show_on_all_spaces") ?? policy.defaults.showOnAllSpaces,
+            isCollapsed: args.bool("collapsed") ?? false,
         ))
 
         if let frame = args.frame() {
@@ -306,6 +319,25 @@ struct MCPTools: Sendable {
         try await database.deleteTaskImage(taskId: id)
         return .object(["removed_image": .bool(true), "deleted_task": .bool(false)])
     }
+
+    // MARK: - Category tools
+
+
+
+
+
+
+    // MARK: - Resource tools
+
+
+
+
+    // MARK: - Deadline & reminder tools
+
+
+
+
+
 
     // MARK: - Helpers
 

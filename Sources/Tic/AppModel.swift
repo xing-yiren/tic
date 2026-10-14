@@ -15,16 +15,23 @@ final class AppModel {
     let database: AppDatabase
     let windows: NoteWindowManager
     let updates = UpdateChecker()
+    let preferences = NotePreferences()
     @ObservationIgnored private let mcp: MCPService
-
+    @ObservationIgnored private let hotkeys = GlobalHotkeyService()
     /// All saved notes (ascending `sortIndex`, i.e. creation order) — drives the menu bar list.
     /// Stays in sync as notes are created, renamed, or deleted.
     private(set) var notes: [Note] = []
 
+
+
+    /// The last attempt to register the global new-note hotkey, so the settings UI can explain a
+    /// conflict instead of silently doing nothing.
+    private(set) var hotkeyStatus: GlobalHotkeyService.RegistrationResult = .registered
+
     @ObservationIgnored private var notesObservation: Task<Void, Never>?
     @ObservationIgnored private var searchWindow: NSWindow?
     @ObservationIgnored private var mcpWindow: NSWindow?
-
+    @ObservationIgnored private var settingsWindow: NSWindow?
     private init() {
         // The DB lives in Application Support; fall back to in-memory so the app still runs if
         // that can't be opened for some reason.
@@ -56,6 +63,38 @@ final class AppModel {
         updates.start()
     }
 
+
+
+
+    // MARK: - New-note defaults & global hotkey
+
+    /// Pushes the current new-note defaults into the window manager (existing notes are untouched).
+    func applyNewNoteDefaults() {
+        windows.newNoteDefaults = preferences.newNoteDefaults
+    }
+
+    /// (Re)registers the global new-note hotkey from the saved preference, recording the result so
+    /// the settings UI can surface a conflict. A conflict leaves the previous chord unregistered.
+    @discardableResult
+    func applyGlobalHotkey() -> GlobalHotkeyService.RegistrationResult {
+        guard let shortcut = preferences.hotkey else {
+            hotkeys.unregister()
+            hotkeyStatus = .invalid
+            return hotkeyStatus
+        }
+        let result = hotkeys.register(shortcut) { [weak self] in
+            self?.newNoteFromHotkey()
+        }
+        hotkeyStatus = result
+        return result
+    }
+
+    /// The global hotkey fired: create + open a note and take focus (an explicit user gesture).
+    private func newNoteFromHotkey() {
+        NSApp.activate(ignoringOtherApps: true)
+        Task { await windows.newNote() }
+    }
+
     private func startObservingNotes() {
         notesObservation?.cancel()
         notesObservation = Task { [weak self, database] in
@@ -68,6 +107,21 @@ final class AppModel {
             }
         }
     }
+
+
+    // MARK: - Categories & filtering
+
+
+
+
+
+
+
+
+
+
+
+
 
     // MARK: - Actions
 
@@ -85,7 +139,6 @@ final class AppModel {
 
     /// Bring all open notes to the front.
     func showAll() {
-        windows.showAll()
         NSApp.activate()
     }
 
@@ -176,6 +229,43 @@ final class AppModel {
     func dismissMCPSetup() {
         mcpWindow?.orderOut(nil)
     }
+
+    /// Opens the Preferences window (new-note defaults + global hotkey). A single reused, centered,
+    /// floating panel — same treatment as the Lists palette and MCP setup.
+    func openSettings() {
+        if settingsWindow == nil {
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 380),
+                styleMask: [.titled, .closable, .fullSizeContentView],
+                backing: .buffered, defer: false
+            )
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
+            panel.isFloatingPanel = true
+            panel.level = .floating
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            panel.isMovableByWindowBackground = true
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.standardWindowButton(.closeButton)?.isHidden = true
+            panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            panel.standardWindowButton(.zoomButton)?.isHidden = true
+            panel.contentView = NSHostingView(rootView: SettingsView())
+            settingsWindow = panel
+        }
+        guard let window = settingsWindow else { return }
+        centerOnActiveDisplay(window)
+        window.level = .floating
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
+    func dismissSettings() {
+        settingsWindow?.orderOut(nil)
+    }
+
+
 
     // MARK: - MCP (AI agents)
 

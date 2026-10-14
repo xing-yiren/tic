@@ -210,6 +210,7 @@ final class AppDatabase: Sendable {
         }
     }
 
+
     func insert(_ note: Note) async throws {
         try await dbQueue.write { db in try note.insert(db) }
     }
@@ -376,7 +377,8 @@ extension AppDatabase {
             try seed(
                 Note(
                     title: "Welcome to Tic 👋", color: .yellow, material: .solid,
-                    frameX: 130, frameY: 200, frameW: 300, frameH: 440, sortIndex: 0
+                    frameX: 130, frameY: 200, frameW: 300, frameH: 440,
+                    floatOnTop: true, showOnAllSpaces: true, sortIndex: 0
                 ),
                 [
                     SeedTask("Tap the circle to finish a task", 0, false),
@@ -395,7 +397,8 @@ extension AppDatabase {
             try seed(
                 Note(
                     title: "Shortcuts ⌨️", color: .blue, material: .solid,
-                    frameX: 470, frameY: 260, frameW: 300, frameH: 320, sortIndex: 1
+                    frameX: 470, frameY: 260, frameW: 300, frameH: 320,
+                    floatOnTop: true, showOnAllSpaces: true, sortIndex: 1
                 ),
                 [
                     SeedTask("**Return** — finish editing, or add a task", 0, false),

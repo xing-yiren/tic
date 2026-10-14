@@ -27,6 +27,7 @@ struct Note: Identifiable, Equatable, Codable, Sendable {
     var isOpen: Bool
     var sortIndex: Int
 
+
     // Per-note checklist display options (applied by `NoteController.displayedTasks`, not stored on
     // the tasks themselves): hide finished rows, and/or keep finished subtrees sunk to the bottom.
     var hideCompleted: Bool

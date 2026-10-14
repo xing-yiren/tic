@@ -120,6 +120,42 @@ extension MCPTools {
                  description: "Remove a task's image. If the task has no text, the task itself is removed too (an image-only task).",
                  inputSchema: object(["task_id": prop("string", "The task's id")], required: ["task_id"]),
                  annotations: destructive),
+
+            // MARK: Categories
+
+            Tool(name: "list_categories",
+                 description: "List every category (id, name, sort index, and how many notes it holds). A note with no category is 'Uncategorised'.",
+                 inputSchema: object([:]), annotations: readOnly),
+
+            Tool(name: "create_category",
+                 description: "Create a category. The name is trimmed and must be non-empty and unique.",
+                 inputSchema: object(["name": prop("string", "Category name")], required: ["name"])),
+
+            Tool(name: "rename_category",
+                 description: "Rename a category (trimmed, non-empty, unique).",
+                 inputSchema: object([
+                    "category_id": prop("string", "The category's id"),
+                    "name": prop("string", "New name"),
+                 ], required: ["category_id", "name"])),
+
+            Tool(name: "delete_category",
+                 description: "Delete a category. Its notes are NOT deleted — they move back to Uncategorised.",
+                 inputSchema: object(["category_id": prop("string", "The category's id")], required: ["category_id"]),
+                 annotations: destructive),
+
+            Tool(name: "set_note_category",
+                 description: "Move a note into a category, or pass category_id: null to make it Uncategorised.",
+                 inputSchema: object([
+                    "note_id": prop("string", "The note's id"),
+                    "category_id": .object(["type": .array(["string", "null"]), "description": "Category id, or null for Uncategorised"]),
+                 ], required: ["note_id", "category_id"])),
+
+
+
+
+
+
+
         ]
     }
 

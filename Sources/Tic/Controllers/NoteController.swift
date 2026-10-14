@@ -38,6 +38,11 @@ final class NoteController {
     /// Asks the manager to show a task's image (by task id) in the image window.
     @ObservationIgnored var onOpenImage: ((UUID) -> Void)?
 
+    /// Assigns this note to a category (nil = uncategorised). The manager wires this to a
+    /// targeted DB write plus a visibility reconcile, so moving a note to a hidden category drops
+    /// it from view — mirroring the plan's "single strategy" rule.
+    @ObservationIgnored var onSetCategory: ((UUID?) -> Void)?
+
     /// Bumped to ask the note's title field to take the keyboard (e.g. a freshly created note).
     private(set) var titleFocusRequest = 0
 
@@ -528,6 +533,12 @@ extension NoteController {
 
     // MARK: - Category
 
+    /// Moves this note into `categoryID` (nil = uncategorised).
+    func setCategory(_ categoryID: UUID?) {
+        guard note.categoryID != categoryID else { return }
+        note.categoryID = categoryID   // optimistic; the note observation confirms
+        onSetCategory?(categoryID)
+    }
 
     /// Creates a new, separate note.
     func requestNewNote() {

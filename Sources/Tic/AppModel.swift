@@ -22,16 +22,24 @@ final class AppModel {
     /// Stays in sync as notes are created, renamed, or deleted.
     private(set) var notes: [Note] = []
 
+    /// All categories (ascending `sortIndex`) — drives the menu bar / pickers.
+    private(set) var categories: [Category] = []
 
+    /// Which categories the desktop is showing. Persisted so the selection survives relaunch. "Hide
+    /// All" is a separate *session* toggle owned by the window manager.
+    private(set) var categoryFilter: CategoryFilter
 
     /// The last attempt to register the global new-note hotkey, so the settings UI can explain a
     /// conflict instead of silently doing nothing.
     private(set) var hotkeyStatus: GlobalHotkeyService.RegistrationResult = .registered
 
     @ObservationIgnored private var notesObservation: Task<Void, Never>?
+    @ObservationIgnored private var categoriesObservation: Task<Void, Never>?
     @ObservationIgnored private var searchWindow: NSWindow?
     @ObservationIgnored private var mcpWindow: NSWindow?
     @ObservationIgnored private var settingsWindow: NSWindow?
+    @ObservationIgnored private var categoriesWindow: NSWindow?
+
     private init() {
         // The DB lives in Application Support; fall back to in-memory so the app still runs if
         // that can't be opened for some reason.
@@ -41,6 +49,7 @@ final class AppModel {
         self.database = db
         self.windows = NoteWindowManager(appDatabase: db)
         self.mcp = MCPService(database: db)
+        self.categoryFilter = CategoryFilterStore.load()
         NSLog("[Tic] Database ready at \(db.path)")
         mcp.onConnectionCountChange = { [weak self] count in
             Task { @MainActor in self?.mcpConnections = count }
@@ -56,15 +65,30 @@ final class AppModel {
 
     /// Run once after launch: open saved note panels, then start streaming the notes list.
     func bootstrap() async {
+        windows.newNoteDefaults = preferences.newNoteDefaults
+        windows.categoryFilter = categoryFilter
+        windows.newNoteCategoryID = { [weak self] in self?.defaultNewNoteCategoryID() }
         await windows.restoreAll()
+        await windows.reconcileVisibility()   // apply the persisted filter to the restored panels
         startObservingNotes()
+        startObservingCategories()
         applyLaunchAtLogin(launchAtLogin)   // honor the saved preference (effective when packaged)
+        applyGlobalHotkey()
         if mcpEnabled { applyMCPEnabled(true) }
         updates.start()
     }
 
 
 
+    /// The category a newly created note should land in: the single selected category when exactly
+    /// one is chosen (and uncategorised isn't also in the set), else uncategorised.
+    private func defaultNewNoteCategoryID() -> UUID? {
+        guard categoryFilter.mode == .selected else { return nil }
+        if categoryFilter.categoryIDs.count == 1, !categoryFilter.includesUncategorized {
+            return categoryFilter.categoryIDs.first
+        }
+        return nil
+    }
 
     // MARK: - New-note defaults & global hotkey
 
@@ -108,24 +132,125 @@ final class AppModel {
         }
     }
 
+    private func startObservingCategories() {
+        categoriesObservation?.cancel()
+        categoriesObservation = Task { [weak self, database] in
+            do {
+                for try await list in database.observeCategories() {
+                    self?.categories = list
+                    self?.pruneFilter()
+                }
+            } catch {
+                NSLog("[Tic] categories observation ended: \(error)")
+            }
+        }
+    }
 
     // MARK: - Categories & filtering
 
+    /// Drops category ids that no longer exist from the persisted filter (e.g. a category deleted in
+    /// another build/instance), and re-reconciles if anything changed.
+    private func pruneFilter() {
+        let live = Set(categories.map(\.id))
+        var filter = categoryFilter
+        let before = filter.categoryIDs
+        filter.categoryIDs.formIntersection(live)
+        guard filter.categoryIDs != before else { return }
+        setCategoryFilter(filter)
+    }
 
+    /// Applies and persists a new category filter, reconciling the live panels.
+    func setCategoryFilter(_ filter: CategoryFilter) {
+        categoryFilter = filter
+        windows.categoryFilter = filter
+        CategoryFilterStore.save(filter)
+        Task { await windows.reconcileVisibility() }
+    }
 
+    /// Toggles one category in the visible set. Selecting from `.all` starts a fresh selection with
+    /// just that category; the last deselection leaves an empty (show-nothing) selection.
+    func toggleCategoryVisibility(_ id: UUID) {
+        var filter = categoryFilter
+        if filter.mode == .all {
+            filter.mode = .selected
+            filter.categoryIDs = [id]
+            filter.includesUncategorized = false
+        } else if filter.categoryIDs.contains(id) {
+            filter.categoryIDs.remove(id)
+        } else {
+            filter.categoryIDs.insert(id)
+        }
+        setCategoryFilter(filter)
+    }
 
+    /// Toggles "Uncategorised" as a visible option.
+    func toggleUncategorizedVisibility() {
+        var filter = categoryFilter
+        if filter.mode == .all {
+            filter.mode = .selected
+            filter.categoryIDs = []
+            filter.includesUncategorized = true
+        } else {
+            filter.includesUncategorized.toggle()
+        }
+        setCategoryFilter(filter)
+    }
 
+    /// Show every category (no restriction).
+    func showAllCategories() { setCategoryFilter(.all) }
 
+    /// Session-only "hide everything". Not persisted.
+    func setHideAll(_ hidden: Bool) { Task { await windows.setTemporarilyHideAll(hidden) } }
 
+    var hideAllActive: Bool { windows.temporarilyHideAll }
 
+    /// Creates a category and reveals it (so a note created into it right after is visible).
+    @discardableResult
+    func createCategory(name: String) async throws -> Category {
+        let category = try await database.createCategory(name: name)
+        // New categories start visible if we're in a restrictive filter — otherwise the note the user
+        // creates next could silently land off-screen.
+        if categoryFilter.mode == .selected { categoryFilter.categoryIDs.insert(category.id); setCategoryFilter(categoryFilter) }
+        return category
+    }
 
+    func renameCategory(id: UUID, name: String) async throws {
+        try await database.renameCategory(id: id, name: name)
+    }
 
+    func reorderCategories(_ orderedIDs: [UUID]) async throws {
+        try await database.reorderCategories(orderedIDs)
+    }
 
+    /// Deletes a category (its notes fall back to uncategorised) and drops it from the filter.
+    func deleteCategory(id: UUID) async {
+        do {
+            _ = try await database.deleteCategory(id: id)
+            var filter = categoryFilter
+            filter.removeCategory(id)
+            setCategoryFilter(filter)
+            await windows.reconcileVisibility()
+        } catch {
+            NSLog("[Tic] deleteCategory failed: \(error)")
+        }
+    }
 
+    /// Assigns a note to a category (nil = uncategorised) and re-reconciles visibility, so moving a
+    /// note to a hidden category drops it from view and moving it back restores it.
+    func setCategory(_ categoryID: UUID?, for note: Note) async {
+        do {
+            try await database.updateNoteCategory(id: note.id, categoryID: categoryID)
+            await windows.reconcileVisibility()
+        } catch {
+            NSLog("[Tic] setCategory failed: \(error)")
+        }
+    }
 
     // MARK: - Actions
 
-    /// Create and open a fresh note (cascaded). Used by every "new list" surface.
+    /// Create and open a fresh note (cascaded). Used by every "new list" surface — the menu bar, the
+    /// Dock menu, a note's "+" button, and the global hotkey all funnel here, so they share one
+    /// creation strategy (defaults + category + focus).
     func newNote() {
         NSApp.activate()
         Task { await windows.newNote() }
@@ -139,6 +264,7 @@ final class AppModel {
 
     /// Bring all open notes to the front.
     func showAll() {
+        windows.showAll()
         NSApp.activate()
     }
 
@@ -265,7 +391,39 @@ final class AppModel {
         settingsWindow?.orderOut(nil)
     }
 
+    /// Opens the Categories management window (create / rename / reorder / delete).
+    func openCategories() {
+        if categoriesWindow == nil {
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 420, height: 460),
+                styleMask: [.titled, .closable, .fullSizeContentView],
+                backing: .buffered, defer: false
+            )
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
+            panel.isFloatingPanel = true
+            panel.level = .floating
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            panel.isMovableByWindowBackground = true
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.standardWindowButton(.closeButton)?.isHidden = true
+            panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            panel.standardWindowButton(.zoomButton)?.isHidden = true
+            panel.contentView = NSHostingView(rootView: CategoryManagementView())
+            categoriesWindow = panel
+        }
+        guard let window = categoriesWindow else { return }
+        centerOnActiveDisplay(window)
+        window.level = .floating
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
 
+    func dismissCategories() {
+        categoriesWindow?.orderOut(nil)
+    }
 
     // MARK: - MCP (AI agents)
 

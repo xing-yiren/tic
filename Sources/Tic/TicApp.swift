@@ -110,9 +110,23 @@ private struct MenuBarContent: View {
 
         Divider()
 
+        categoryMenu
+
+        Button("Manage Categories…") { model.openCategories() }
+
+        Toggle("Hide All Notes", isOn: Binding(
+            get: { model.hideAllActive },
+            set: { model.setHideAll($0) }
+        ))
+
+        Divider()
+
         Button("Search Lists…") { model.openSearch() }
 
         Button("AI Agents (MCP)…") { model.openMCPSetup() }
+
+        Button("Preferences…") { model.openSettings() }
+            .keyboardShortcut(",", modifiers: .command)
 
         Toggle("Launch at Login", isOn: Binding(
             get: { model.launchAtLogin },
@@ -134,7 +148,56 @@ private struct MenuBarContent: View {
         note.title.isEmpty ? "Untitled List" : note.title
     }
 
+    /// Multi-select category filter + "All Categories". Uncategorised is a first-class entry.
+    @ViewBuilder
+    private var categoryMenu: some View {
+        let filter = model.categoryFilter
+        Menu("Show Categories") {
+            Button {
+                model.showAllCategories()
+            } label: {
+                checkmarkLabel("All Categories", checked: filter.mode == .all)
+            }
 
+            Divider()
 
+            ForEach(model.categories) { category in
+                Button {
+                    model.toggleCategoryVisibility(category.id)
+                } label: {
+                    checkmarkLabel(category.name, checked: isVisible(category.id))
+                }
+            }
 
+            Button {
+                model.toggleUncategorizedVisibility()
+            } label: {
+                checkmarkLabel("Uncategorised", checked: isUncategorizedVisible)
+            }
+
+            if model.categories.isEmpty {
+                Text("No categories yet")
+            }
+
+            Divider()
+
+            Button("Manage Categories…") { model.openCategories() }
+        }
+    }
+
+    private func isVisible(_ id: UUID) -> Bool {
+        model.categoryFilter.mode == .all || model.categoryFilter.categoryIDs.contains(id)
+    }
+
+    private var isUncategorizedVisible: Bool {
+        let f = model.categoryFilter
+        return f.mode == .all || f.includesUncategorized
+    }
+
+    private func checkmarkLabel(_ title: String, checked: Bool) -> some View {
+        HStack {
+            Text(title)
+            if checked { Image(systemName: "checkmark") }
+        }
+    }
 }

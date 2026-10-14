@@ -25,12 +25,16 @@ struct MCPTools: Sendable {
     private static let maxTextLength = 20_000
     private static let maxImageBytes = 10 * 1024 * 1024
 
+    /// the MCP service; a no-op in isolated tests.
+    var onRemindersChanged: @Sendable () -> Void = {}
 
+    /// The app-wide "new note" policy (float-on-top / all-Spaces defaults plus the category a new
     /// note should land in), read at creation time. The plan's rule is that every creation entry
     /// point — menu bar, Dock, the note "+", MCP — shares one default, so this closure reads the
     /// live preference rather than a copy. Set by the MCP service; defaults in isolated tests.
     struct NewNotePolicy: Sendable {
         var defaults: NewNoteDefaults = .default
+        var categoryID: UUID?
     }
 
     var newNotePolicy: @Sendable () async -> NewNotePolicy = { NewNotePolicy() }
@@ -57,6 +61,11 @@ struct MCPTools: Sendable {
             case "crop_task_image": value = try await cropTaskImage(args)
             case "remove_task_image": value = try await removeTaskImage(args)
             case "focus_note":      value = try await focusNote(args)
+            case "list_categories": value = try await listCategories()
+            case "create_category": value = try await createCategory(args)
+            case "rename_category": value = try await renameCategory(args)
+            case "delete_category": value = try await deleteCategory(args)
+            case "set_note_category": value = try await setNoteCategory(args)
             default: throw ToolError("Unknown tool: \(name)")
             }
             return CallTool.Result(content: [.text(json(value))], isError: false)
@@ -100,6 +109,7 @@ struct MCPTools: Sendable {
             floatOnTop: args.bool("float_on_top") ?? policy.defaults.floatOnTop,
             showOnAllSpaces: args.bool("show_on_all_spaces") ?? policy.defaults.showOnAllSpaces,
             isCollapsed: args.bool("collapsed") ?? false,
+            categoryID: policy.categoryID
         ))
 
         if let frame = args.frame() {
@@ -322,10 +332,58 @@ struct MCPTools: Sendable {
 
     // MARK: - Category tools
 
+    private func listCategories() async throws -> Value {
+        let categories = try await database.allCategories()
+        let counts = try await database.noteCountsByCategory()
+        return .array(categories.map { c in
+            .object([
+                "id": .string(c.id.uuidString),
+                "name": .string(c.name),
+                "sort_index": .int(c.sortIndex),
+                "note_count": .int(counts[c.id] ?? 0),
+            ])
+        })
+    }
 
+    private func createCategory(_ args: Args) async throws -> Value {
+        guard let name = args.string("name") else { throw ToolError("'name' is required") }
+        let category = try await database.createCategory(name: name)   // validated: trimmed + unique
+        return .object(["id": .string(category.id.uuidString), "name": .string(category.name)])
+    }
 
+    private func renameCategory(_ args: Args) async throws -> Value {
+        let id = try args.uuid("category_id")
+        guard let name = args.string("name") else { throw ToolError("'name' is required") }
+        try await database.renameCategory(id: id, name: name)
+        return .object(["id": .string(id.uuidString), "name": .string(name)])
+    }
 
+    private func deleteCategory(_ args: Args) async throws -> Value {
+        let id = try args.uuid("category_id")
+        let affected = try await database.deleteCategory(id: id)   // notes move to Uncategorised
+        return .object(["deleted": .string(id.uuidString), "notes_moved_to_uncategorised": .int(affected.count)])
+    }
 
+    private func setNoteCategory(_ args: Args) async throws -> Value {
+        let id = try args.uuid("note_id")
+        _ = try await note(id)
+        // `category_id` may be null (explicitly uncategorised) or a valid id.
+        let categoryID: UUID?
+        if args.isNull("category_id") {
+            categoryID = nil
+        } else if let raw = args.string("category_id") {
+            guard let parsed = UUID(uuidString: raw) else { throw ToolError("'category_id' is not a valid id") }
+            guard try await database.allCategories().contains(where: { $0.id == parsed }) else {
+                throw ToolError("No category with id \(raw)")
+            }
+            categoryID = parsed
+        } else {
+            throw ToolError("'category_id' is required (a category id, or null for Uncategorised)")
+        }
+        try await database.updateNoteCategory(id: id, categoryID: categoryID)
+        return .object(["note_id": .string(id.uuidString),
+                        "category_id": categoryID.map { .string($0.uuidString) } ?? .null])
+    }
 
     // MARK: - Resource tools
 
@@ -338,6 +396,7 @@ struct MCPTools: Sendable {
 
 
 
+    private func iso(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
 
     // MARK: - Helpers
 
@@ -427,6 +486,23 @@ struct MCPTools: Sendable {
         func string(_ k: String) -> String? { raw[k]?.stringValue }
         func bool(_ k: String) -> Bool? { raw[k]?.boolValue }
         func array(_ k: String) -> [Value]? { raw[k]?.arrayValue }
+        /// True when the key is present and explicitly null (JSON `null`), so callers can tell
+        /// "clear this" apart from "leave it alone".
+        func isNull(_ k: String) -> Bool {
+            guard let value = raw[k] else { return false }
+            if case .null = value { return true }
+            return false
+        }
+
+        /// Parses an ISO-8601 date-time (e.g. "2026-10-14T09:00:00Z"), also accepting a bare date.
+        func date(_ k: String) throws -> Date {
+            guard let s = raw[k]?.stringValue else { throw ToolError("Missing '\(k)'") }
+            let iso = ISO8601DateFormatter()
+            if let d = iso.date(from: s) { return d }
+            iso.formatOptions = [.withFullDate]
+            if let d = iso.date(from: s) { return d }
+            throw ToolError("'\(k)' must be an ISO-8601 date-time (e.g. 2026-10-14T09:00:00Z)")
+        }
         func int(_ k: String) -> Int? { raw[k].flatMap { $0.intValue ?? $0.doubleValue.map(Int.init) } }
         func double(_ k: String) -> Double? { raw[k].flatMap { $0.doubleValue ?? $0.intValue.map(Double.init) } }
 

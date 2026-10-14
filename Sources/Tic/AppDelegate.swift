@@ -22,6 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Notification actions
 
+    private func handleUpdateTap() {
+        AppModel.shared.updates.openReleasePage()
+    }
 
 
 

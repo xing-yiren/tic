@@ -29,6 +29,7 @@ struct TaskRowView: View {
     let image: TaskImageView?
     /// ⌘V of an image while this row is being edited attaches it to the task.
     let onPasteImage: (Data) -> Void
+    var onSetDue: ((Date?) -> Void)?
 
     @State private var draft: String
     @State private var editing = false
@@ -137,8 +138,26 @@ struct TaskRowView: View {
 
 
 
+    private static func defaultDueDate() -> Date {
+        let cal = Calendar.current
+        let next = Date().addingTimeInterval(3600)
+        return cal.date(bySetting: .minute, value: 0, of: next) ?? next
+    }
 
+    private static let dueFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        f.doesRelativeDateFormatting = true
+        return f
+    }()
 
+    private static let compactFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
+    }()
 
     @ViewBuilder
     private var content: some View {

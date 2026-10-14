@@ -27,6 +27,9 @@ struct Note: Identifiable, Equatable, Codable, Sendable {
     var isOpen: Bool
     var sortIndex: Int
 
+    /// The category this note belongs to, or `nil` for "Uncategorised". A category delete sets this
+    /// back to `nil` (FK `ON DELETE SET NULL`), never deleting the note.
+    var categoryID: UUID?
 
     // Per-note checklist display options (applied by `NoteController.displayedTasks`, not stored on
     // the tasks themselves): hide finished rows, and/or keep finished subtrees sunk to the bottom.
@@ -49,6 +52,7 @@ struct Note: Identifiable, Equatable, Codable, Sendable {
         isCollapsed: Bool = false,
         isOpen: Bool = true,
         sortIndex: Int = 0,
+        categoryID: UUID? = nil,
         hideCompleted: Bool = false,
         moveCompletedToBottom: Bool = false
     ) {
@@ -67,6 +71,7 @@ struct Note: Identifiable, Equatable, Codable, Sendable {
         self.isCollapsed = isCollapsed
         self.isOpen = isOpen
         self.sortIndex = sortIndex
+        self.categoryID = categoryID
         self.hideCompleted = hideCompleted
         self.moveCompletedToBottom = moveCompletedToBottom
     }
@@ -81,6 +86,7 @@ extension Note: FetchableRecord, PersistableRecord {
         static let updatedAt = Column("updatedAt")
         static let sortIndex = Column("sortIndex")
         static let isOpen = Column("isOpen")
+        static let categoryID = Column("categoryID")
     }
 }
 // GRDB's default date storage is readable, sortable UTC text ("yyyy-MM-dd HH:mm:ss.SSS"),

@@ -29,13 +29,30 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// `AppModel` from `NotePreferences`; changing it never rewrites existing notes.
     var newNoteDefaults: NewNoteDefaults = .default
 
+    /// Assigned a new note's category on creation (the currently-selected single category, or nil for
+    /// uncategorised). Set by `AppModel` in M2; a no-op until then.
+    var newNoteCategoryID: () -> UUID? = { nil }
+
+    /// Called before a note is surfaced so a filtered-out note can be un-hidden first (M2). Returns
+    /// true when the note was hidden by the filter and has now been revealed.
+    var onWillReveal: ((UUID) -> Bool)?
 
 
+    /// Notes currently hidden by the category filter (M2). Empty until categories land.
+    private(set) var hiddenByFilter: Set<UUID> = []
 
+    /// The category filter the desktop is honouring. Drives which open notes have a visible panel.
+    var categoryFilter: CategoryFilter = .all
 
+    /// Session-only "hide everything" (the menu's Hide All). Never persisted — cleared on relaunch, and
+    /// deliberately separate from each note's `isOpen` so it can't be mistaken for a user close.
+    private(set) var temporarilyHideAll = false
 
+    /// A note is "on screen" if it has a panel and isn't merely order-out'd by the filter.
+    func isOnScreen(_ id: UUID) -> Bool { panels[id] != nil && !hiddenByFilter.contains(id) }
 
-
+    /// Notes whose panels exist (used by the menu bar's "visible" list in M2).
+    var openNoteIDs: [UUID] { Array(panels.keys) }
 
     init(appDatabase: AppDatabase) {
         self.appDatabase = appDatabase
@@ -65,7 +82,17 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     @discardableResult
     func openNote(_ note: Note, makeKey: Bool = true) -> NotePanel {
         if let existing = panels[note.id] {
-            existing.makeKeyAndOrderFront(nil)
+            // A note already on screen: only an explicit, interactive open (makeKey) should pull it
+            // forward and focus it. A background restore / MCP surface (makeKey: false) must NOT yank
+            // focus from whatever app the user is in — previously this branch always made it key.
+            if makeKey {
+                hiddenByFilter.remove(note.id)
+                existing.makeKeyAndOrderFront(nil)
+            } else if hiddenByFilter.contains(note.id) {
+                // Revealed by an explicit request while filtered out — restore it without focusing.
+                hiddenByFilter.remove(note.id)
+                existing.orderFront(nil)
+            }
             return existing
         }
         if !note.isOpen {
@@ -96,6 +123,19 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         controller.onNewNote = { [weak self] in
             Task { await self?.newNote() }
         }
+        controller.onSetCategory = { [weak self] categoryID in
+            Task { [weak self] in
+                guard let self else { return }
+                try? await self.appDatabase.updateNoteCategory(id: note.id, categoryID: categoryID)
+                // Re-reconcile: moving a note into a hidden category removes it from view; moving it
+                // back restores it. Also reveal it if the new category is filtered out (a direct user
+                // choice shouldn't make the note vanish without a trace).
+                if let categoryID, self.categoryFilter.hides(categoryID: categoryID) {
+                    self.revealNote(withCategory: categoryID)
+                }
+                await self.reconcileVisibility()
+            }
+        }
         controller.onOpenImage = { [weak self, weak controller, weak panel] taskId in
             guard let self, let controller, let panel else { return }
             self.showImageWindow(controller: controller, taskId: taskId, from: panel)
@@ -116,20 +156,87 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
             setCollapsed(panel, collapsed: true, animate: false)
         }
         panel.delegate = self   // only now: the placement and roll-up above aren't user moves to persist
+        // If the current filter excludes this note, drop it from view right away. The panel (and its
+        // controller, position, collapse state, and `isOpen`) all stay — the filter only hides it.
+        if applyFilterVisibility(to: panel, note: note, makeKey: makeKey) {
+            return panel
+        }
         return panel
     }
 
+    /// Applies the current filter (and the Hide-All toggle) to one panel. Returns true when the panel
+    /// was hidden (so the caller skips making it key). A restore (making a hidden note visible again)
+    /// is presented without stealing focus — `openNote(makeKey: true)` is the explicit "I want it".
+    @discardableResult
+    private func applyFilterVisibility(to panel: NotePanel, note: Note, makeKey: Bool) -> Bool {
+        let shouldShow = !temporarilyHideAll && !categoryFilter.hides(categoryID: note.categoryID)
+        if shouldShow, hiddenByFilter.remove(note.id) != nil {
+            panel.orderFront(nil)
+        }
+        if !shouldShow {
+            hiddenByFilter.insert(note.id)
+            panel.orderOut(nil)
+            return true
+        }
+        return false
+    }
 
     // MARK: - Category filter / visibility coordination
 
+    /// Switches the active category filter and reconciles every live panel: matching notes come back,
+    /// non-matching ones are order-out'd (keeping `isOpen` untouched). Applies silently — no focus.
+    func applyCategoryFilter(_ filter: CategoryFilter) async {
+        categoryFilter = filter
+        await reconcileVisibility()
+    }
 
+    /// Sets the session-only "hide everything" toggle. Restoring re-shows exactly the notes that were
+    /// on screen and match the filter — never a note the user had closed (`isOpen == false`).
+    func setTemporarilyHideAll(_ hidden: Bool) async {
+        guard hidden != temporarilyHideAll else { return }
+        temporarilyHideAll = hidden
+        await reconcileVisibility()
+    }
 
+    /// Brings a note into view for an explicit open: if the filter hid it, add its category to the
+    /// visible set and make it visible. Returns true when the filter was adjusted.
+    @discardableResult
+    func revealNote(withCategory categoryID: UUID?) -> Bool {
+        guard categoryFilter.hides(categoryID: categoryID) else { return false }
+        var filter = categoryFilter
+        filter.reveal(categoryID: categoryID)
+        categoryFilter = filter
+        return true
+    }
 
+    /// Recomputes which open notes should be on screen and order-fronts / order-outs panels to match.
+    /// This is the single chokepoint: restore, filter changes, category edits, and MCP open/focus all
+    /// route here rather than mutating `isOpen`. Only the *visible* set of panels is touched.
+    func reconcileVisibility() async {
+        do {
+            let visible = try await appDatabase.openNotes(matching: categoryFilter)
+            let visibleIDs = Set(visible.map(\.id))
+            for (id, panel) in panels {
+                let shouldShow = !temporarilyHideAll && visibleIDs.contains(id)
+                if shouldShow {
+                    if hiddenByFilter.remove(id) != nil {
+                        panel.orderFront(nil)   // restore at its saved spot, without focusing
+                    }
+                } else {
+                    hiddenByFilter.insert(id)
+                    panel.orderOut(nil)
+                }
+            }
+        } catch {
+            NSLog("[Tic] reconcileVisibility failed: \(error)")
+        }
+    }
 
     /// Creates a fresh note (cascaded so it doesn't sit exactly on top of the last) and opens it.
     /// The DB assigns a unique, monotonic `sortIndex`; the cascade offset derives from that index
     /// (not the open-panel count), so placement and ordering stay stable after closes/deletes.
     /// The new note inherits the app-wide float/all-Spaces defaults and the current single selected
+    /// category, and (like the plan's "actively created notes get focus") drops the caret in the title.
     func newNote() async {
         do {
             let defaults = newNoteDefaults
@@ -138,6 +245,7 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
                 floatOnTop: defaults.floatOnTop,
                 showOnAllSpaces: defaults.showOnAllSpaces
             )
+            fresh.categoryID = newNoteCategoryID()
             let inserted = try await appDatabase.insertNewNote(fresh)
             let step = Double(inserted.sortIndex % 8) * 28
             var note = inserted
@@ -157,9 +265,10 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Brings every open note to the front (menu-bar "Show All").
+    /// Brings every *visible* open note to the front (menu-bar "Show All"). Filter-hidden notes are
+    /// skipped — "Show All" fronts what's already on the desktop; it doesn't bypass the filter.
     func showAll() {
-        for panel in panels.values { panel.orderFront(nil) }
+        for (id, panel) in panels where !hiddenByFilter.contains(id) { panel.orderFront(nil) }
     }
 
     /// Permanently deletes a note: closes its window if open (existing teardown), then removes
@@ -167,6 +276,7 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     func deleteNote(_ note: Note) async {
         do {
             try await appDatabase.deleteNote(id: note.id)
+            hiddenByFilter.remove(note.id)
             panels[note.id]?.close()   // only tear down once the row is actually gone
         } catch {
             NSLog("[Tic] deleteNote failed: \(error)")
@@ -273,9 +383,19 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// `orderFrontRegardless` so a `.normal`-level note appears above other apps even while Tic is in
     /// the background, but does **not** activate Tic — the user's keyboard focus stays where it was.
     func openNoteByID(_ id: UUID) async {
-        if let panel = panels[id] { panel.orderFrontRegardless(); return }
-        guard let note = try? await appDatabase.note(id: id) else { return }
-        let panel = openNote(note, makeKey: false)
+        let panel: NotePanel
+        if let existing = panels[id] {
+            panel = existing
+        } else {
+            guard let note = try? await appDatabase.note(id: id) else { return }
+            panel = openNote(note, makeKey: false)
+        }
+        // If the filter is hiding this note, reveal it (its category joins the visible set). This is a
+        // *surfacing*, not a focus grab — restore it without activating.
+        if hiddenByFilter.contains(id) {
+            if let note = try? await appDatabase.note(id: id) { revealNote(withCategory: note.categoryID) }
+            hiddenByFilter.remove(id)
+        }
         panel.orderFrontRegardless()
     }
 
@@ -290,6 +410,11 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
             panel = openNote(note, makeKey: false)
         } else {
             return
+        }
+        // An explicit open honours the plan's rule: adjust the filter so the note is visible first.
+        if hiddenByFilter.contains(id), let note = try? await appDatabase.note(id: id) {
+            revealNote(withCategory: note.categoryID)
+            hiddenByFilter.remove(id)
         }
         // A background app's plain activate() is refused by macOS focus-stealing prevention, so use
         // the assertive form (deprecated on 14 but still the only thing that reliably pulls focus
@@ -331,6 +456,7 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         pendingFrameSaves[panel.noteID] = nil
         expandedHeights[panel.noteID] = nil
         savedFrames[panel.noteID] = nil
+        hiddenByFilter.remove(panel.noteID)
         controllers[panel.noteID]?.stop()
         controllers[panel.noteID] = nil
         panels[panel.noteID] = nil

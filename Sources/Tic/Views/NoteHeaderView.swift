@@ -43,6 +43,9 @@ struct NoteHeaderView: View {
                     if !focused { commitTitle() }
                 }
 
+            CategoryPicker(controller: controller, theme: theme)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
             Rectangle()
                 .fill(theme.accent.opacity(0.35))
                 .frame(height: 1)

@@ -135,6 +135,24 @@ final class AppDatabase: Sendable {
             }
         }
 
+
+        // Categories: a user-managed, ordered set of labels. A note belongs to at most one category;
+        // "Uncategorised" is simply `categoryID IS NULL` (no special row to keep or delete). Deleting
+        // a category moves its notes back to Uncategorised via `ON DELETE SET NULL` — never deletes
+        // them. Existing notes migrate as uncategorised (the column defaults to NULL).
+        migrator.registerMigration("v6_categories") { db in
+            try db.create(table: "category") { t in
+                t.primaryKey("id", .blob).notNull()
+                t.column("name", .text).notNull()
+                t.column("sortIndex", .integer).notNull().defaults(to: 0)
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull()
+            }
+            try db.alter(table: "note") { t in
+                t.add(column: "categoryID", .blob).references("category", onDelete: .setNull)
+            }
+            try db.create(index: "note_on_categoryID", on: "note", columns: ["categoryID"])
+        }
         return migrator
     }
 
@@ -210,6 +228,29 @@ final class AppDatabase: Sendable {
         }
     }
 
+    /// The open notes matching a category filter (used by the window coordinator to decide which
+    /// panels to reveal). Uncategorised = `categoryID IS NULL`.
+    func openNotes(matching filter: CategoryFilter) async throws -> [Note] {
+        try await dbQueue.read { db in
+            switch filter.mode {
+            case .all:
+                return try Note.filter(Note.Columns.isOpen == true).order(Note.Columns.sortIndex).fetchAll(db)
+            case .selected:
+                let ids = Array(filter.categoryIDs)
+                if ids.isEmpty {
+                    guard filter.includesUncategorized else { return [] }
+                    return try Note.filter(Note.Columns.isOpen == true)
+                        .filter(Note.Columns.categoryID == nil)
+                        .order(Note.Columns.sortIndex).fetchAll(db)
+                }
+                let condition: SQLExpression = filter.includesUncategorized
+                    ? ids.contains(Note.Columns.categoryID) || Note.Columns.categoryID == nil
+                    : ids.contains(Note.Columns.categoryID)
+                return try Note.filter(Note.Columns.isOpen == true).filter(condition)
+                    .order(Note.Columns.sortIndex).fetchAll(db)
+            }
+        }
+    }
 
     func insert(_ note: Note) async throws {
         try await dbQueue.write { db in try note.insert(db) }

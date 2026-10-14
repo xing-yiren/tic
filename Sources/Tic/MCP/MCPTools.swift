@@ -25,6 +25,7 @@ struct MCPTools: Sendable {
     private static let maxTextLength = 20_000
     private static let maxImageBytes = 10 * 1024 * 1024
 
+    /// Called after a deadline/reminder change so the app can reconcile system notifications. Set by
     /// the MCP service; a no-op in isolated tests.
     var onRemindersChanged: @Sendable () -> Void = {}
 
@@ -69,6 +70,8 @@ struct MCPTools: Sendable {
             case "add_resource":    value = try await addResource(args)
             case "update_resource": value = try await updateResource(args)
             case "remove_resource": value = try await removeResource(args)
+            case "set_task_due":    value = try await setTaskDue(args)
+            case "set_task_reminder": value = try await setTaskReminder(args)
             default: throw ToolError("Unknown tool: \(name)")
             }
             return CallTool.Result(content: [.text(json(value))], isError: false)
@@ -98,7 +101,12 @@ struct MCPTools: Sendable {
         let note = try await note(id)
         let tasks = try await database.tasks(noteId: id)
         let imageIds = try await database.taskImageIds(noteId: id)
-        return noteValue(note, tasks: tasks, imageIds: imageIds)
+        let resources = try await database.resources(noteID: id)
+        var reminders: [UUID: TaskReminder] = [:]
+        for task in tasks {
+            if let reminder = try await database.reminder(taskID: task.id) { reminders[task.id] = reminder }
+        }
+        return noteValue(note, tasks: tasks, imageIds: imageIds, resources: resources, reminders: reminders)
     }
 
     private func createNote(_ args: Args) async throws -> Value {
@@ -423,7 +431,32 @@ struct MCPTools: Sendable {
 
     // MARK: - Deadline & reminder tools
 
+    private func setTaskDue(_ args: Args) async throws -> Value {
+        let id = try args.uuid("task_id")
+        guard try await database.task(id: id) != nil else { throw ToolError("No task with id \(id.uuidString)") }
+        let due = args.isNull("due_at") ? nil : try args.date("due_at")
+        try await database.updateTaskDue(id: id, dueAt: due)
+        return .object(["task_id": .string(id.uuidString),
+                        "due_at": due.map { .string(iso($0)) } ?? .null])
+    }
 
+    private func setTaskReminder(_ args: Args) async throws -> Value {
+        let id = try args.uuid("task_id")
+        guard try await database.task(id: id) != nil else { throw ToolError("No task with id \(id.uuidString)") }
+        if args.isNull("remind_at") || args.string("remind_at") == nil {
+            try await database.clearReminder(taskID: id)
+            onRemindersChanged()
+            return .object(["task_id": .string(id.uuidString), "remind_at": .null])
+        }
+        let remindAt = try args.date("remind_at")
+        let reminder = try await database.setReminder(taskID: id, remindAt: remindAt)
+        onRemindersChanged()
+        return .object([
+            "task_id": .string(id.uuidString),
+            "remind_at": .string(iso(reminder.remindAt)),
+            "revision": .int(reminder.revision),
+        ])
+    }
 
     private func resourceKind(_ raw: String) throws -> ResourceLink.Kind {
         switch raw.lowercased() {
@@ -489,7 +522,10 @@ struct MCPTools: Sendable {
         return m
     }
 
-    private func noteValue(_ n: Note, tasks: [TaskItem]?, imageIds: Set<UUID> = []) -> Value {
+    private func noteValue(
+        _ n: Note, tasks: [TaskItem]?, imageIds: Set<UUID> = [],
+        resources: [ResourceLink] = [], reminders: [UUID: TaskReminder] = [:]
+    ) -> Value {
         var o: [String: Value] = [
             "id": .string(n.id.uuidString),
             "title": .string(n.title),
@@ -501,19 +537,26 @@ struct MCPTools: Sendable {
             "collapsed": .bool(n.isCollapsed),
             "hide_completed": .bool(n.hideCompleted),
             "move_completed_to_bottom": .bool(n.moveCompletedToBottom),
+            "category_id": n.categoryID.map { .string($0.uuidString) } ?? .null,
             "frame": frameValue(CGRect(x: n.frameX, y: n.frameY, width: n.frameW, height: n.frameH)),
         ]
         if let tasks {
             o["tasks"] = .array(tasks.map { t in
-                .object([
+                var tValue: [String: Value] = [
                     "id": .string(t.id.uuidString),
                     "text": .string(t.text),
                     "level": .int(t.indentLevel),
                     "done": .bool(t.isDone),
                     "has_image": .bool(imageIds.contains(t.id)),
-                ])
+                    "due_at": t.dueAt.map { .string(iso($0)) } ?? .null,
+                ]
+                let reminder = reminders[t.id]
+                tValue["remind_at"] = reminder.map { .string(iso($0.remindAt)) } ?? .null
+                tValue["reminder_revision"] = reminder.map { .int($0.revision) } ?? .null
+                return .object(tValue)
             })
         }
+        if !resources.isEmpty { o["resources"] = .array(resources.map(resourceValue)) }
         return .object(o)
     }
 

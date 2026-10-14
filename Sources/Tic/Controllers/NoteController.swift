@@ -17,12 +17,15 @@ final class NoteController {
     private(set) var thumbnails: [UUID: CGImage] = [:]
     /// The note's attached resources (files / folders / repos / web links), bookmark-less and ordered.
     private(set) var resources: [ResourceSummary] = []
+    /// Each task's reminder (if any), keyed by task id — drives the row's DDL/reminder badge.
+    private(set) var reminders: [UUID: TaskReminder] = [:]
 
     @ObservationIgnored private let db: AppDatabase
     @ObservationIgnored private var observation: Task<Void, Never>?
     @ObservationIgnored private var noteObservation: Task<Void, Never>?
     @ObservationIgnored private var imageObservation: Task<Void, Never>?
     @ObservationIgnored private var resourceObservation: Task<Void, Never>?
+    @ObservationIgnored private var reminderObservation: Task<Void, Never>?
     @ObservationIgnored private var loadingThumbnails: Set<UUID> = []
 
     /// Re-applies window behaviour (floatOnTop, showOnAllSpaces) to the live panel. Set by
@@ -40,6 +43,10 @@ final class NoteController {
 
     /// Asks the manager to show a task's image (by task id) in the image window.
     @ObservationIgnored var onOpenImage: ((UUID) -> Void)?
+
+    /// Asks for reminder reconciliation after a deadline/reminder change (set by the manager, wired to
+    /// `AppModel.reconcileReminders`). Keeps the controller free of the notification layer.
+    @ObservationIgnored var onRemindersChanged: (() -> Void)?
 
     /// Assigns this note to a category (nil = uncategorised). The manager wires this to a
     /// targeted DB write plus a visibility reconcile, so moving a note to a hidden category drops
@@ -90,6 +97,26 @@ final class NoteController {
                 NSLog("[Tic] image observation ended for \(noteID): \(error)")
             }
         }
+        resourceObservation?.cancel()
+        resourceObservation = Task { [weak self, db, noteID] in
+            do {
+                for try await list in db.observeResources(noteID: noteID) {
+                    self?.resources = list
+                }
+            } catch {
+                NSLog("[Tic] resource observation ended for \(noteID): \(error)")
+            }
+        }
+        reminderObservation?.cancel()
+        reminderObservation = Task { [weak self, db, noteID] in
+            do {
+                for try await map in db.observeReminders(noteID: noteID) {
+                    self?.reminders = map
+                }
+            } catch {
+                NSLog("[Tic] reminder observation ended for \(noteID): \(error)")
+            }
+        }
     }
 
     func stop() {
@@ -99,6 +126,10 @@ final class NoteController {
         noteObservation = nil
         imageObservation?.cancel()
         imageObservation = nil
+        resourceObservation?.cancel()
+        resourceObservation = nil
+        reminderObservation?.cancel()
+        reminderObservation = nil
     }
 
     /// Applies an observed note-row change: replaces `note`, and drives the live window only for the
@@ -398,10 +429,46 @@ final class NoteController {
 
     // MARK: - Deadlines & reminders
 
+    /// A task's reminder, if one is set.
+    func reminder(for task: TaskItem) -> TaskReminder? { reminders[task.id] }
 
+    /// Whether a task's reminder time has passed and it isn't done.
+    func isOverdue(_ task: TaskItem, now: Date = Date()) -> Bool {
+        guard !task.isDone, let reminder = reminders[task.id] else { return false }
+        return reminder.remindAt <= now
+    }
 
+    /// Sets a task's deadline (nil clears it). A deadline is independent of the reminder time.
+    func setDue(_ task: TaskItem, dueAt: Date?) {
+        var updated = task
+        updated.dueAt = dueAt
+        if let index = tasks.firstIndex(where: { $0.id == task.id }) { tasks[index].dueAt = dueAt }
+        Task { [db] in try? await db.updateTaskDue(id: updated.id, dueAt: dueAt) }
+    }
 
+    /// Sets (or replaces) a task's reminder time. The coordinator is asked to (re)schedule afterwards.
+    /// This is the point a system authorization prompt may appear (in context, on first use).
+    func setReminder(_ task: TaskItem, remindAt: Date?) {
+        let id = task.id
+        Task { [db, weak self] in
+            if let remindAt {
+                try? await db.setReminder(taskID: id, remindAt: remindAt)
+            } else {
+                try? await db.clearReminder(taskID: id)
+            }
+            await MainActor.run { self?.onRemindersChanged?() }
+        }
+    }
 
+    /// Defers a task's reminder by the coordinator's snooze interval.
+    func snooze(_ task: TaskItem) {
+        let id = task.id
+        let fireAt = Date().addingTimeInterval(ReminderCoordinator.snoozeInterval)
+        Task { [db, weak self] in
+            try? await db.setReminder(taskID: id, remindAt: fireAt)
+            await MainActor.run { self?.onRemindersChanged?() }
+        }
+    }
 
     // MARK: - Structural helpers
 

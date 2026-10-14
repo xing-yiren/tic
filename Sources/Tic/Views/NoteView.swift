@@ -273,7 +273,11 @@ struct NoteView: View {
                     onInteractionChange: { active in setImageInteraction(task.id, active) }
                 )
             },
-            onPasteImage: { controller.attachImage($0, to: task) }
+            onPasteImage: { controller.attachImage($0, to: task) },
+            reminder: controller.reminder(for: task),
+            isOverdue: controller.isOverdue(task),
+            onSetDue: { controller.setDue(task, dueAt: $0) },
+            onSetReminder: { controller.setReminder(task, remindAt: $0) }
         )
         .padding(.horizontal, 12)
         .padding(.vertical, 1)

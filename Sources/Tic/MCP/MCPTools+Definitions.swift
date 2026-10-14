@@ -173,8 +173,21 @@ extension MCPTools {
                  inputSchema: object(["resource_id": prop("string", "The resource's id")], required: ["resource_id"]),
                  annotations: destructive),
 
+            // MARK: Deadlines & reminders
 
+            Tool(name: "set_task_due",
+                 description: "Set or clear a task's deadline (an ISO-8601 date-time, e.g. 2026-10-14T09:00:00Z). Pass due_at: null to clear. The deadline is independent of any reminder.",
+                 inputSchema: object([
+                    "task_id": prop("string", "The task's id"),
+                    "due_at": .object(["type": .array(["string", "null"]), "description": "ISO-8601 date-time, or null to clear"]),
+                 ], required: ["task_id", "due_at"])),
 
+            Tool(name: "set_task_reminder",
+                 description: "Set, reschedule, or clear a task's reminder (a macOS system notification at an ISO-8601 date-time). Pass remind_at: null to cancel. Setting a reminder may prompt for notification permission the first time.",
+                 inputSchema: object([
+                    "task_id": prop("string", "The task's id"),
+                    "remind_at": .object(["type": .array(["string", "null"]), "description": "ISO-8601 date-time, or null to cancel"]),
+                 ], required: ["task_id", "remind_at"])),
         ]
     }
 

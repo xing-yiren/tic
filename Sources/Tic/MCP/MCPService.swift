@@ -18,8 +18,10 @@ final class MCPService: @unchecked Sendable {
     private let database: AppDatabase
     /// Window pokes (open/close/move a note's panel), supplied by `AppModel` so this stays AppKit-free.
     var windowActions = MCPTools.WindowActions()
+    /// The shared new-note policy (defaults + target category) and the reminder-reconcile poke,
     /// both supplied by `AppModel` so MCP creation honours the same rules as the UI.
     var newNotePolicy: @Sendable () async -> MCPTools.NewNotePolicy = { MCPTools.NewNotePolicy() }
+    var onRemindersChanged: (@Sendable () -> Void)?
     /// Listener callbacks land here; `listener` and `sessions` are touched only on it.
     private let queue = DispatchQueue(label: "tic.mcp")
     private var listener: NWListener?
@@ -118,7 +120,15 @@ final class MCPService: @unchecked Sendable {
         sessions[key] = server
         onConnectionCountChange?(sessions.count)
 
-        let tools = MCPTools(database: database, window: windowActions)
+        let actions = windowActions
+        let policy = newNotePolicy
+        let remindersPoke = onRemindersChanged
+        let tools: MCPTools = {
+            var t = MCPTools(database: database, window: actions)
+            t.newNotePolicy = policy
+            if let remindersPoke { t.onRemindersChanged = remindersPoke }
+            return t
+        }()
         Task { [weak self] in
             await server.withMethodHandler(ListTools.self) { _ in ListTools.Result(tools: tools.definitions()) }
             await server.withMethodHandler(CallTool.self) { params in

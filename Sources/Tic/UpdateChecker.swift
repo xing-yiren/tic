@@ -186,10 +186,7 @@ final class UpdateChecker {
             return
         }
 
-        let content = UNMutableNotificationContent()
-        content.title = "Tic v\(release.version) is available"
-        content.body = "You're on v\(currentVersion). Click to see what's new and download."
-        let request = UNNotificationRequest(identifier: "update-\(release.version)", content: content, trigger: nil)
+        let request = NotificationRouter.updateRequest(version: release.version, currentVersion: currentVersion)
         do {
             try await center.add(request)
         } catch {

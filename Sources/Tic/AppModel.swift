@@ -18,6 +18,9 @@ final class AppModel {
     let preferences = NotePreferences()
     @ObservationIgnored private let mcp: MCPService
     @ObservationIgnored private let hotkeys = GlobalHotkeyService()
+    /// Task deadlines/reminders reconciliation (M4). Created in `bootstrap`.
+    @ObservationIgnored private(set) var reminders: ReminderCoordinator!
+
     /// All saved notes (ascending `sortIndex`, i.e. creation order) — drives the menu bar list.
     /// Stays in sync as notes are created, renamed, or deleted.
     private(set) var notes: [Note] = []
@@ -50,7 +53,12 @@ final class AppModel {
         self.windows = NoteWindowManager(appDatabase: db)
         self.mcp = MCPService(database: db)
         self.categoryFilter = CategoryFilterStore.load()
-        NSLog("[Tic] Database ready at \(db.path)")
+        let coordinator = ReminderCoordinator(database: db)
+        coordinator.onOpenNote = { [weak self] id in
+            Task { await self?.windows.focusNoteByID(id) }
+        }
+        self.reminders = coordinator
+        NSLog("[Tic] Database ready at \(db.path) (\(Environment.current))")
         mcp.onConnectionCountChange = { [weak self] count in
             Task { @MainActor in self?.mcpConnections = count }
         }
@@ -61,11 +69,25 @@ final class AppModel {
             setFrame: { [weak self] id, rect in await self?.windows.setFrame(id, to: rect) },
             focus: { [weak self] id in await self?.windows.focusNoteByID(id) }
         )
+        // MCP-created notes share the UI's defaults and target category (the plan's one-creation-rule).
+        mcp.newNotePolicy = { [weak self] in
+            await MainActor.run {
+                guard let self else { return MCPTools.NewNotePolicy() }
+                return MCPTools.NewNotePolicy(
+                    defaults: self.preferences.newNoteDefaults,
+                    categoryID: self.defaultNewNoteCategoryID()
+                )
+            }
+        }
+        mcp.onRemindersChanged = { [weak self] in
+            Task { @MainActor in self?.reconcileReminders() }
+        }
     }
 
     /// Run once after launch: open saved note panels, then start streaming the notes list.
     func bootstrap() async {
         windows.newNoteDefaults = preferences.newNoteDefaults
+        windows.onRemindersChanged = { [weak self] in self?.reconcileReminders() }
         windows.categoryFilter = categoryFilter
         windows.newNoteCategoryID = { [weak self] in self?.defaultNewNoteCategoryID() }
         await windows.restoreAll()
@@ -76,9 +98,29 @@ final class AppModel {
         applyGlobalHotkey()
         if mcpEnabled { applyMCPEnabled(true) }
         updates.start()
+        // Reconcile reminders on launch (the system may have delivered or missed some while we quit).
+        Task { await reminders?.reconcile() }
     }
 
+    /// Re-run reminder reconciliation — after any task/reminder change, on wake, or on a timezone
+    /// change. Cheap and idempotent.
+    func reconcileReminders() {
+        Task { await reminders?.reconcile() }
+    }
 
+    /// Completes a task from a notification's "Complete" action, reusing the same cascade the UI and
+    /// MCP use, then reschedules (the reminder is cancelled because the task is done).
+    func completeTaskFromReminder(taskID: UUID) async {
+        do {
+            guard let task = try await database.task(id: taskID), !task.isDone else { return }
+            let all = try await database.tasks(noteId: task.noteId)
+            let toggled = TaskOutline.applyingToggle(all, toggling: taskID, now: Date())
+            try await database.updateTaskCompletion(TaskOutline.completionChanges(from: all, to: toggled))
+            await reminders?.reconcile()
+        } catch {
+            NSLog("[Tic] completeTaskFromReminder failed: \(error)")
+        }
+    }
 
     /// The category a newly created note should land in: the single selected category when exactly
     /// one is chosen (and uncategorised isn't also in the set), else uncategorised.

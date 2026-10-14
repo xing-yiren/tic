@@ -19,6 +19,9 @@ struct TaskItem: Identifiable, Equatable, Codable, Sendable {
     var indentLevel: Int
     var createdAt: Date
     var completedAt: Date?
+    /// Optional deadline (a definite instant, shown in the current timezone). Distinct from the
+    /// reminder time stored in `taskReminder` — setting an early reminder never moves the DDL.
+    var dueAt: Date?
 
     init(
         id: UUID = UUID(),
@@ -28,7 +31,8 @@ struct TaskItem: Identifiable, Equatable, Codable, Sendable {
         sortIndex: Int = 0,
         indentLevel: Int = 0,
         createdAt: Date = Date(),
-        completedAt: Date? = nil
+        completedAt: Date? = nil,
+        dueAt: Date? = nil
     ) {
         self.id = id
         self.noteId = noteId
@@ -38,6 +42,7 @@ struct TaskItem: Identifiable, Equatable, Codable, Sendable {
         self.indentLevel = indentLevel
         self.createdAt = createdAt
         self.completedAt = completedAt
+        self.dueAt = dueAt
     }
 }
 

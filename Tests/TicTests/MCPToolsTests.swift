@@ -227,3 +227,146 @@ struct MCPToolsTests {
         #expect(h.opened.isEmpty)
     }
 }
+
+// MARK: - Categories, resources, deadlines (MCP surface mirrors the UI's rules)
+
+@Suite("MCP tools — categories & resources & reminders")
+@MainActor
+struct MCPOrganisationTests {
+    private func makeTools() throws -> (MCPTools, AppDatabase) {
+        let db = try AppDatabase.makeInMemory()
+        return (MCPTools(database: db, window: .init()), db)
+    }
+
+    private func call(_ tools: MCPTools, _ name: String, _ args: [String: Value]) async -> (Value, Bool) {
+        let result = await tools.call(name, args)
+        let text = result.content.first.flatMap { if case let .text(t, _, _) = $0 { return t } else { return nil } } ?? ""
+        let value = (try? JSONDecoder().decode(Value.self, from: Data(text.utf8))) ?? .string(text)
+        return (value, result.isError ?? false)
+    }
+
+    private func obj(_ v: Value) -> [String: Value] { v.objectValue ?? [:] }
+
+    @Test("category lifecycle through MCP: create, list, rename, delete → notes become uncategorised")
+    func categoryLifecycle() async throws {
+        let (tools, db) = try makeTools()
+        let (created, err) = await call(tools, "create_category", ["name": "Work"])
+        #expect(!err)
+        let id = try #require(obj(created)["category_id"]?.stringValue ?? obj(created)["id"]?.stringValue)
+
+        let (list, _) = await call(tools, "list_categories", [:])
+        let names = try #require(list.arrayValue).map { $0.objectValue?["name"]?.stringValue }
+        #expect(names == ["Work"])
+
+        // Assign a note, then delete the category: the note must survive, uncategorised.
+        let (note, _) = await call(tools, "create_note", ["title": "Covered"])
+        let noteID = try #require(obj(note)["id"]?.stringValue ?? obj(note)["note_id"]?.stringValue)
+        let (_, e1) = await call(tools, "set_note_category", ["note_id": .string(noteID), "category_id": .string(id)])
+        #expect(!e1)
+        #expect(try await db.note(id: UUID(uuidString: noteID)!)?.categoryID == UUID(uuidString: id))
+
+        let (_, e2) = await call(tools, "delete_category", ["category_id": .string(id)])
+        #expect(!e2)
+        #expect(try await db.note(id: UUID(uuidString: noteID)!) != nil)
+        #expect(try await db.note(id: UUID(uuidString: noteID)!)?.categoryID == nil)
+    }
+
+    @Test("set_note_category accepts null to clear")
+    func clearCategory() async throws {
+        let (tools, db) = try makeTools()
+        let (cat, _) = await call(tools, "create_category", ["name": "X"])
+        let id = try #require(obj(cat)["category_id"]?.stringValue ?? obj(cat)["id"]?.stringValue)
+        let (note, _) = await call(tools, "create_note", ["title": "N"])
+        let noteID = try #require(obj(note)["id"]?.stringValue)
+        _ = await call(tools, "set_note_category", ["note_id": .string(noteID), "category_id": .string(id)])
+        let (_, err) = await call(tools, "set_note_category", ["note_id": .string(noteID), "category_id": .null])
+        #expect(!err)
+        #expect(try await db.note(id: UUID(uuidString: noteID)!)?.categoryID == nil)
+    }
+
+    @Test("add_resource rejects unsafe URLs and returns the stored link")
+    func resourceValidation() async throws {
+        let (tools, _) = try makeTools()
+        let (note, _) = await call(tools, "create_note", ["title": "Links"])
+        let noteID = try #require(obj(note)["id"]?.stringValue)
+
+        let (bad, err) = await call(tools, "add_resource", ["note_id": .string(noteID), "url": "javascript:alert(1)"])
+        #expect(err)
+        #expect(obj(bad)["error"] != nil || bad.stringValue != nil)
+
+        let (good, ok) = await call(tools, "add_resource", ["note_id": .string(noteID), "url": "https://example.com/x"])
+        #expect(!ok)
+        #expect(obj(good)["kind"]?.stringValue == "web")
+    }
+
+    @Test("resources appear in get_note and can be renamed and removed")
+    func resourceRoundTrip() async throws {
+        let (tools, _) = try makeTools()
+        let (note, _) = await call(tools, "create_note", ["title": "Links"])
+        let noteID = try #require(obj(note)["id"]?.stringValue)
+        let (res, _) = await call(tools, "add_resource", ["note_id": .string(noteID), "url": "https://example.com/x"])
+        let resID = try #require(obj(res)["resource_id"]?.stringValue ?? obj(res)["id"]?.stringValue)
+
+        let (fetched, _) = await call(tools, "get_note", ["note_id": .string(noteID)])
+        #expect((obj(fetched)["resources"]?.arrayValue ?? []).count == 1)
+
+        let (renamed, err) = await call(tools, "update_resource", ["resource_id": .string(resID), "label": "Docs"])
+        #expect(!err)
+        #expect(obj(renamed)["label"]?.stringValue == "Docs")
+
+        let (_, e2) = await call(tools, "remove_resource", ["resource_id": .string(resID)])
+        #expect(!e2)
+        let (after, _) = await call(tools, "get_note", ["note_id": .string(noteID)])
+        #expect((obj(after)["resources"]?.arrayValue ?? []).isEmpty)
+    }
+
+    @Test("set_task_due and set_task_reminder round-trip through get_note, and null clears both")
+    func deadlinesAndReminders() async throws {
+        let (tools, _) = try makeTools()
+        let (note, _) = await call(tools, "create_note", ["title": "Timed", "tasks": .array([.string("Ship")])])
+        let noteID = try #require(obj(note)["id"]?.stringValue)
+        let (fetched, _) = await call(tools, "get_note", ["note_id": .string(noteID)])
+        let taskID = try #require(obj(fetched)["tasks"]?.arrayValue?.first?.objectValue?["id"]?.stringValue)
+
+        let (due, e1) = await call(tools, "set_task_due", ["task_id": .string(taskID), "due_at": "2026-10-14T09:00:00Z"])
+        #expect(!e1)
+        #expect(obj(due)["due_at"]?.stringValue?.contains("2026-10-14") == true)
+
+        let (rem, e2) = await call(tools, "set_task_reminder", ["task_id": .string(taskID), "remind_at": "2026-10-14T08:00:00Z"])
+        #expect(!e2)
+        #expect(obj(rem)["revision"]?.intValue == 1)
+
+        let (after, _) = await call(tools, "get_note", ["note_id": .string(noteID)])
+        let first = try #require(obj(after)["tasks"]?.arrayValue?.first?.objectValue)
+        #expect(first["due_at"]?.stringValue?.contains("2026-10-14") == true)
+        #expect(first["reminder_revision"]?.intValue == 1)
+
+        // Clearing with null removes both.
+        _ = await call(tools, "set_task_due", ["task_id": .string(taskID), "due_at": .null])
+        _ = await call(tools, "set_task_reminder", ["task_id": .string(taskID), "remind_at": .null])
+        let (cleared, _) = await call(tools, "get_note", ["note_id": .string(noteID)])
+        let c = try #require(obj(cleared)["tasks"]?.arrayValue?.first?.objectValue)
+        #expect(c["due_at"] == nil || c["due_at"] == .null)
+        #expect(c["remind_at"] == nil || c["remind_at"] == .null)
+    }
+
+    @Test("a reminder change notifies the coordinator through the injected hook")
+    func reminderHookFires() async throws {
+        let db = try AppDatabase.makeInMemory()
+        final class Counter: @unchecked Sendable { var n = 0 }
+        let counter = Counter()
+        var tools = MCPTools(database: db, window: .init())
+        tools.onRemindersChanged = { counter.n += 1 }
+        let probe = tools
+
+        let (note, _) = await call(probe, "create_note", ["title": "T", "tasks": .array([.string("Do")])])
+        let noteID = try #require(obj(note)["id"]?.stringValue)
+        let (fetched, _) = await call(probe, "get_note", ["note_id": .string(noteID)])
+        let taskID = try #require(obj(fetched)["tasks"]?.arrayValue?.first?.objectValue?["id"]?.stringValue)
+
+        _ = await call(probe, "set_task_reminder", ["task_id": .string(taskID), "remind_at": "2026-10-14T08:00:00Z"])
+        #expect(counter.n == 1)
+        _ = await call(probe, "set_task_reminder", ["task_id": .string(taskID), "remind_at": .null])
+        #expect(counter.n == 2)
+    }
+}

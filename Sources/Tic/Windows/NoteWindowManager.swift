@@ -37,6 +37,8 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// true when the note was hidden by the filter and has now been revealed.
     var onWillReveal: ((UUID) -> Bool)?
 
+    /// Fired when a task's deadline/reminder changes, so the app can reconcile system notifications.
+    var onRemindersChanged: (() -> Void)?
 
     /// Notes currently hidden by the category filter (M2). Empty until categories land.
     private(set) var hiddenByFilter: Set<UUID> = []
@@ -123,6 +125,7 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         controller.onNewNote = { [weak self] in
             Task { await self?.newNote() }
         }
+        controller.onRemindersChanged = { [weak self] in self?.onRemindersChanged?() }
         controller.onSetCategory = { [weak self] categoryID in
             Task { [weak self] in
                 guard let self else { return }

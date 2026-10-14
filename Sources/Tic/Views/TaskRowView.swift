@@ -29,7 +29,11 @@ struct TaskRowView: View {
     let image: TaskImageView?
     /// ⌘V of an image while this row is being edited attaches it to the task.
     let onPasteImage: (Data) -> Void
+    /// The task's reminder (nil = none), and callbacks to set/clear the deadline + reminder.
+    var reminder: TaskReminder?
+    var isOverdue = false
     var onSetDue: ((Date?) -> Void)?
+    var onSetReminder: ((Date?) -> Void)?
 
     @State private var draft: String
     @State private var editing = false
@@ -54,7 +58,11 @@ struct TaskRowView: View {
         onSubmit: @escaping () -> Void = {},
         onHoverChanged: @escaping (Bool) -> Void = { _ in },
         image: TaskImageView? = nil,
-        onPasteImage: @escaping (Data) -> Void = { _ in }
+        onPasteImage: @escaping (Data) -> Void = { _ in },
+        reminder: TaskReminder? = nil,
+        isOverdue: Bool = false,
+        onSetDue: ((Date?) -> Void)? = nil,
+        onSetReminder: ((Date?) -> Void)? = nil
     ) {
         self.task = task
         self.theme = theme
@@ -68,6 +76,10 @@ struct TaskRowView: View {
         self.onHoverChanged = onHoverChanged
         self.image = image
         self.onPasteImage = onPasteImage
+        self.reminder = reminder
+        self.isOverdue = isOverdue
+        self.onSetDue = onSetDue
+        self.onSetReminder = onSetReminder
         _draft = State(initialValue: task.text)
     }
 
@@ -83,6 +95,9 @@ struct TaskRowView: View {
                     withAnimation(.easeInOut(duration: 0.12)) { hovering = isHovering }
                     onHoverChanged(isHovering)
                 }
+            if hasScheduling {
+                deadlineChip.padding(.leading, Self.textInset)
+            }
             // Below the text line's HStack, so the ✕ / nest hint appearing can't narrow a fill-width image —
             // which would shorten the row under the pointer and make the hover flicker on and off.
             image
@@ -120,6 +135,16 @@ struct TaskRowView: View {
                     ShortcutHint(glyphs: "⇧⇥", label: "nest", theme: theme)
                 }
             } else if hovering {
+                if onSetDue != nil {
+                    Button { showDueEditor = true } label: {
+                        Image(systemName: reminder != nil ? "bell.badge" : "calendar.badge.clock")
+                            .font(.system(size: 12))
+                            .foregroundStyle(theme.secondary.opacity(0.8))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Deadline & reminder")
+                    .popover(isPresented: $showDueEditor, arrowEdge: .bottom) { dueEditor }
+                }
                 Button(action: onDelete) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 13))
@@ -134,10 +159,107 @@ struct TaskRowView: View {
 
     // MARK: - Deadline & reminder
 
+    private var hasScheduling: Bool { task.dueAt != nil || reminder != nil }
 
+    /// The compact chip under a row's text showing the deadline (red when overdue) and whether a
+    /// reminder is set. Clicking it opens the editor.
+    private var deadlineChip: some View {
+        Button { showDueEditor = true } label: {
+            HStack(spacing: 5) {
+                if let due = task.dueAt {
+                    Label(Self.dueFormatter.string(from: due), systemImage: "calendar")
+                        .font(.caption2.weight(.medium))
+                }
+                if let remindAt = reminder?.remindAt {
+                    Label(Self.compactFormatter.string(from: remindAt), systemImage: "bell.fill")
+                        .font(.caption2)
+                }
+            }
+            .foregroundStyle(chipColor)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(chipColor.opacity(0.14)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Deadline & reminder")
+        .popover(isPresented: $showDueEditor, arrowEdge: .bottom) { dueEditor }
+    }
 
+    private var chipColor: Color {
+        if isOverdue { return .red }
+        if task.dueAt != nil { return theme.accent }
+        return theme.secondary
+    }
 
+    /// Due date + reminder time: two independent fields (an early reminder never moves the DDL), each
+    /// clearable. "Remind" defaults to the deadline so setting a DDL offers a reminder in one step.
+    private var dueEditor: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(task.text.isEmpty ? "Task" : task.text)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .frame(width: 260, alignment: .leading)
 
+            Toggle("Deadline", isOn: Binding(
+                get: { task.dueAt != nil },
+                set: { enabled in
+                    if enabled {
+                        let base = task.dueAt ?? Self.defaultDueDate()
+                        onSetDue?(base)
+                        if reminder == nil { onSetReminder?(base) }
+                    } else {
+                        onSetDue?(nil)
+                        onSetReminder?(nil)
+                    }
+                }
+            ))
+            if let due = task.dueAt {
+                DatePicker("", selection: Binding(
+                    get: { due },
+                    set: { onSetDue?($0) }
+                ), displayedComponents: [.date, .hourAndMinute])
+                .labelsHidden()
+                .datePickerStyle(.compact)
+            }
+
+            Toggle("Remind me", isOn: Binding(
+                get: { reminder != nil },
+                set: { enabled in
+                    onSetReminder?(enabled ? (task.dueAt ?? Self.defaultDueDate()) : nil)
+                }
+            ))
+            if let remindAt = reminder?.remindAt {
+                DatePicker("", selection: Binding(
+                    get: { remindAt },
+                    set: { onSetReminder?($0) }
+                ), displayedComponents: [.date, .hourAndMinute])
+                .labelsHidden()
+                .datePickerStyle(.compact)
+            }
+
+            Text("Reminders use system notifications, so they respect Do Not Disturb and may be delayed.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 260, alignment: .leading)
+
+            HStack {
+                Spacer()
+                Button("Clear") {
+                    onSetDue?(nil)
+                    onSetReminder?(nil)
+                }
+                Button("Done") { showDueEditor = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(14)
+        .frame(width: 288)
+    }
+
+    /// The deadline a fresh picker starts at: the next round hour.
     private static func defaultDueDate() -> Date {
         let cal = Calendar.current
         let next = Date().addingTimeInterval(3600)

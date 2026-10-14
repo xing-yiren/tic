@@ -135,7 +135,6 @@ final class AppDatabase: Sendable {
             }
         }
 
-
         // Categories: a user-managed, ordered set of labels. A note belongs to at most one category;
         // "Uncategorised" is simply `categoryID IS NULL` (no special row to keep or delete). Deleting
         // a category moves its notes back to Uncategorised via `ON DELETE SET NULL` — never deletes
@@ -171,6 +170,24 @@ final class AppDatabase: Sendable {
             }
             try db.create(index: "resource_on_noteID", on: "resource", columns: ["noteID"])
         }
+
+        // Deadlines + a single reminder per task. `dueAt` is a definite instant; `taskReminder` holds
+        // the (possibly earlier) reminder time plus a revision for staleness checks. Cascades with its
+        // task, so deleting the task (or its note) cancels the reminder's row.
+        migrator.registerMigration("v8_due_and_reminders") { db in
+            try db.alter(table: "task") { t in
+                t.add(column: "dueAt", .datetime)
+            }
+            try db.create(table: "taskReminder") { t in
+                t.primaryKey("taskID", .blob).notNull()
+                    .references("task", onDelete: .cascade)
+                t.column("remindAt", .datetime).notNull()
+                t.column("revision", .integer).notNull().defaults(to: 1)
+                t.column("acknowledgedRevision", .integer)
+                t.column("updatedAt", .datetime).notNull()
+            }
+        }
+
         return migrator
     }
 

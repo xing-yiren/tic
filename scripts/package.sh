@@ -38,7 +38,9 @@ if [ "$bundles_found" -eq 0 ]; then
     exit 1
 fi
 
-if [ ! -f "$APP/Contents/Resources/Tic_Tic.bundle/MenuBarIcon.png" ]; then
+# SwiftPM places resources under Contents/Resources inside the .bundle (and has, across
+# toolchains, at the bundle root): accept either, so packaging isn't toolchain-fragile.
+if ! find "$APP/Contents/Resources" -name MenuBarIcon.png -print -quit | grep -q MenuBarIcon.png; then
     echo "error: missing packaged menu bar icon bundle" >&2
     exit 1
 fi

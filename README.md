@@ -31,6 +31,20 @@ bar click — glance at them, check things off, drag them around. Each note is i
 - **Raycast-style search palette** — a floating, centered command palette to search/open/delete
   any list, with keyboard navigation.
 - **Launch at Login**, a custom menu-bar icon, and a native Dock identity.
+- **Categories** — group lists by project, then show only what you're working on. Hiding a
+  category is temporary (it never counts as "closed"), so a note you shut yourself stays shut.
+- **Resources** — attach files, folders, repositories, or web links to a note; open in the default
+  app, reveal in Finder, or relocate a moved file. Tic stores a reference and never touches the
+  original.
+- **Deadlines & reminders** — give a task a due date and an optional system notification, with
+  **Open Note / Complete / Snooze 10 min** actions right on the banner.
+- **Global new-note shortcut** (default **⌘⇧N**) — works from any app, and tells you if the chord
+  is already taken.
+
+> This is a **development fork**. It uses a separate data directory, bundle id, and preferences
+> from upstream Tic, so it can't read or overwrite your real notes. See
+> [`docs/DEVELOPMENT_NOTES.zh-CN.md`](docs/DEVELOPMENT_NOTES.zh-CN.md) for the differences, known
+> limits, and backup/recovery steps.
 
 ## Requirements
 
@@ -49,6 +63,10 @@ macOS **14 (Sonoma)** or later.
 
    Then open it normally. (Alternatively: right-click `Tic.app` → **Open** → **Open**.)
 3. To have Tic open automatically, enable **Launch at Login** from its menu-bar menu.
+
+## Local development roadmap
+
+本地二次开发文档（中文）：[产品与技术方案](docs/DEVELOPMENT_SPEC.zh-CN.md) · [分阶段开发计划](docs/DEVELOPMENT_PLAN.zh-CN.md)。这些文档描述计划中的扩展，当前功能以源码为准。
 
 ## Build from source
 
@@ -80,6 +98,8 @@ open Package.swift        # edit in Xcode
 | **Shift-Tab** | Make the task a subtask (nest one level deeper) |
 | **⌃ Shift-Tab** | Un-nest a subtask (move it back out) |
 | **⌘N** | New list |
+| **⌘⇧N** (configurable) | New list from **any** app — the global shortcut |
+| **⌘,** | Preferences |
 | **Double-click** the title bar | Roll the note up / down |
 
 You can also **drag a task** to reorder it, or **drag it right** to nest it — the drop indicator

@@ -123,6 +123,7 @@ struct NoteView: View {
                 titleFocused: $titleFocused
             )
             taskList
+            ResourceListView(controller: controller, theme: theme)
             QuickAddBar(controller: controller, theme: theme)
         }
     }

@@ -15,11 +15,14 @@ final class NoteController {
     private(set) var imageCrops: [UUID: CGRect] = [:]
     /// Downsampled, uncropped bitmaps for drawing images on the note, loaded lazily per task.
     private(set) var thumbnails: [UUID: CGImage] = [:]
+    /// The note's attached resources (files / folders / repos / web links), bookmark-less and ordered.
+    private(set) var resources: [ResourceSummary] = []
 
     @ObservationIgnored private let db: AppDatabase
     @ObservationIgnored private var observation: Task<Void, Never>?
     @ObservationIgnored private var noteObservation: Task<Void, Never>?
     @ObservationIgnored private var imageObservation: Task<Void, Never>?
+    @ObservationIgnored private var resourceObservation: Task<Void, Never>?
     @ObservationIgnored private var loadingThumbnails: Set<UUID> = []
 
     /// Re-applies window behaviour (floatOnTop, showOnAllSpaces) to the live panel. Set by
@@ -200,13 +203,71 @@ final class NoteController {
 
     // MARK: - Resources
 
+    /// Attaches a local file/folder (from a picker or a drop) as a resource, recording a bookmark so
+    /// it survives a move. The kind is detected (a git repo becomes `.repository`).
+    func attachResource(at url: URL, kind: ResourceLink.Kind? = nil) {
+        let resolvedKind = kind ?? ResourceAccessService.kind(for: url)
+        let bookmark = ResourceAccessService.bookmark(for: url)
+        let label = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+        Task { [db, noteID] in
+            try? await db.addResource(
+                noteID: noteID, url: url.absoluteString, kind: resolvedKind,
+                label: label, bookmarkData: bookmark
+            )
+        }
+    }
 
+    /// Attaches a web link (http/https only; validated by the database layer).
+    func attachWebLink(_ raw: String) {
+        Task { [db, noteID] in try? await db.addResource(noteID: noteID, url: raw, kind: .web, label: nil) }
+    }
 
+    func renameResource(_ resource: ResourceSummary, to label: String) {
+        Task { [db] in try? await db.renameResource(id: resource.id, label: label) }
+    }
 
+    /// Removes a resource link. The original file is untouched.
+    func removeResource(_ resource: ResourceSummary) {
+        resources.removeAll { $0.id == resource.id }   // optimistic
+        Task { [db] in try? await db.deleteResource(id: resource.id) }
+    }
 
+    /// Opens a resource (files/folders with their default app, web links in the browser). Reads the
+    /// bookmark on demand — never held in the observed list.
+    func openResource(_ resource: ResourceSummary) {
+        Task { [db] in
+            let bookmark = try? await db.resourceBookmark(id: resource.id)
+            _ = ResourceAccessService.open(url: resource.url, bookmarkData: bookmark ?? nil, kind: resource.kind)
+        }
+    }
 
+    /// Reveals a local resource in Finder.
+    func revealResource(_ resource: ResourceSummary) {
+        guard resource.isLocal else { return }
+        Task { [db] in
+            let bookmark = try? await db.resourceBookmark(id: resource.id)
+            _ = ResourceAccessService.revealInFinder(url: resource.url, bookmarkData: bookmark ?? nil)
+        }
+    }
 
+    /// Whether a local resource's target still exists (drives the "relocate" affordance).
+    func resourceIsReachable(_ resource: ResourceSummary) async -> Bool {
+        guard resource.isLocal else { return true }
+        let bookmark = try? await db.resourceBookmark(id: resource.id)
+        if case .resolved = ResourceAccessService.resolve(url: resource.url, bookmarkData: bookmark ?? nil, kind: resource.kind) {
+            return true
+        }
+        return false
+    }
 
+    /// Re-points a resource at a new location (after the original moved).
+    func relocateResource(_ resource: ResourceSummary, to url: URL) {
+        let kind = ResourceAccessService.kind(for: url)
+        let bookmark = ResourceAccessService.bookmark(for: url)
+        Task { [db] in
+            try? await db.relocateResource(id: resource.id, to: url.absoluteString, kind: kind, bookmarkData: bookmark)
+        }
+    }
 
     /// The task's stored image at full resolution, uncropped — decoded off the main actor.
     func fullImage(taskId id: UUID) async -> CGImage? {

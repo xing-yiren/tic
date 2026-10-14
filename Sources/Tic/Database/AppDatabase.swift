@@ -153,6 +153,24 @@ final class AppDatabase: Sendable {
             }
             try db.create(index: "note_on_categoryID", on: "note", columns: ["categoryID"])
         }
+
+        // Resources attached to a note (files / folders / repos / web links). Stored as references;
+        // the bookmark data (nullable) rides along for re-location. Cascades with its note.
+        migrator.registerMigration("v7_resources") { db in
+            try db.create(table: "resource") { t in
+                t.primaryKey("id", .blob).notNull()
+                t.column("noteID", .blob).notNull()
+                    .references("note", onDelete: .cascade)
+                t.column("kind", .text).notNull()
+                t.column("label", .text).notNull().defaults(to: "")
+                t.column("url", .text).notNull()
+                t.column("bookmarkData", .blob)
+                t.column("sortIndex", .integer).notNull().defaults(to: 0)
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull()
+            }
+            try db.create(index: "resource_on_noteID", on: "resource", columns: ["noteID"])
+        }
         return migrator
     }
 

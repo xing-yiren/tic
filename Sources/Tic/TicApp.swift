@@ -58,6 +58,7 @@ private struct MenuBarLabel: View {
     private static func menuBarIconURL() -> URL? {
         let fileManager = FileManager.default
         let fileName = "MenuBarIcon.png"
+        let resourceBundleName = "Tic_Tic.bundle"
         let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent()
 
         var candidates: [URL] = []
@@ -67,9 +68,11 @@ private struct MenuBarLabel: View {
         }
 
         if let resourceURL = Bundle.main.resourceURL {
+            candidates.append(resourceURL.appendingPathComponent(fileName))
         }
 
         for baseURL in [Bundle.main.bundleURL, Bundle.main.resourceURL, executableDirectory].compactMap({ $0 }) {
+            candidates.append(baseURL.appendingPathComponent(resourceBundleName).appendingPathComponent(fileName))
         }
 
         return candidates.first { fileManager.fileExists(atPath: $0.path) }

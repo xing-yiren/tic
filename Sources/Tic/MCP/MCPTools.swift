@@ -66,6 +66,9 @@ struct MCPTools: Sendable {
             case "rename_category": value = try await renameCategory(args)
             case "delete_category": value = try await deleteCategory(args)
             case "set_note_category": value = try await setNoteCategory(args)
+            case "add_resource":    value = try await addResource(args)
+            case "update_resource": value = try await updateResource(args)
+            case "remove_resource": value = try await removeResource(args)
             default: throw ToolError("Unknown tool: \(name)")
             }
             return CallTool.Result(content: [.text(json(value))], isError: false)
@@ -387,14 +390,60 @@ struct MCPTools: Sendable {
 
     // MARK: - Resource tools
 
+    private func addResource(_ args: Args) async throws -> Value {
+        let noteID = try args.uuid("note_id")
+        _ = try await note(noteID)
+        guard let url = args.string("url") else { throw ToolError("'url' is required (a file:// or http(s) URL)") }
+        let kind = try args.string("kind").map(resourceKind)
+        // The shared validator rejects anything that isn't file:/http/https — an agent can't bypass the
+        // same rules the UI enforces.
+        let resource = try await database.addResource(
+            noteID: noteID, url: url, kind: kind, label: args.string("label")
+        )
+        return resourceValue(resource)
+    }
 
+    private func updateResource(_ args: Args) async throws -> Value {
+        let id = try args.uuid("resource_id")
+        guard let existing = try await database.resource(id: id) else {
+            throw ToolError("No resource with id \(id.uuidString)")
+        }
+        if let label = args.string("label") { try await database.renameResource(id: id, label: label) }
+        return resourceValue(try await database.resource(id: id) ?? existing)
+    }
 
+    private func removeResource(_ args: Args) async throws -> Value {
+        let id = try args.uuid("resource_id")
+        guard try await database.resource(id: id) != nil else {
+            throw ToolError("No resource with id \(id.uuidString)")
+        }
+        try await database.deleteResource(id: id)   // removes the link only; the file is untouched
+        return .object(["removed": .string(id.uuidString)])
+    }
 
     // MARK: - Deadline & reminder tools
 
 
 
+    private func resourceKind(_ raw: String) throws -> ResourceLink.Kind {
+        switch raw.lowercased() {
+        case "file": return .file
+        case "folder", "directory": return .directory
+        case "repo", "repository": return .repository
+        case "web", "link", "url": return .web
+        default: throw ToolError("Unknown resource kind '\(raw)'. Options: file, folder, repository, web")
+        }
+    }
 
+    private func resourceValue(_ r: ResourceLink) -> Value {
+        .object([
+            "id": .string(r.id.uuidString),
+            "note_id": .string(r.noteID.uuidString),
+            "kind": .string(r.kind.rawValue),
+            "label": .string(r.label),
+            "url": .string(r.url),
+        ])
+    }
 
     private func iso(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
 

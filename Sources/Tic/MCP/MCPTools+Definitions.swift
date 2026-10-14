@@ -150,9 +150,28 @@ extension MCPTools {
                     "category_id": .object(["type": .array(["string", "null"]), "description": "Category id, or null for Uncategorised"]),
                  ], required: ["note_id", "category_id"])),
 
+            // MARK: Resources
 
+            Tool(name: "add_resource",
+                 description: "Attach a resource to a note: a local file:// URL (file, folder, or a folder containing .git → repository) or an http(s) web link. Tic stores only a reference; the original is never modified or moved.",
+                 inputSchema: object([
+                    "note_id": prop("string", "The note's id"),
+                    "url": prop("string", "A file:// or http(s):// URL"),
+                    "kind": enumProp(["file", "folder", "repository", "web"], "Override the detected kind"),
+                    "label": prop("string", "Display name (optional)"),
+                 ], required: ["note_id", "url"])),
 
+            Tool(name: "update_resource",
+                 description: "Change a resource's display name.",
+                 inputSchema: object([
+                    "resource_id": prop("string", "The resource's id"),
+                    "label": prop("string", "New display name"),
+                 ], required: ["resource_id"])),
 
+            Tool(name: "remove_resource",
+                 description: "Remove a resource link from a note. The original file is left untouched.",
+                 inputSchema: object(["resource_id": prop("string", "The resource's id")], required: ["resource_id"]),
+                 annotations: destructive),
 
 
 

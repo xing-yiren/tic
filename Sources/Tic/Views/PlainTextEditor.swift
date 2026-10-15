@@ -174,6 +174,14 @@ final class EditorTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // While an input method (e.g. Pinyin) is composing, the keys belong to the IME, not to us.
+        // Return confirms the candidate — it must not commit the row and end editing; Tab is often
+        // the candidate pager. Hand everything straight to normal key handling so the input context
+        // receives it; our own chords resume once the composition is gone.
+        if hasMarkedText() {
+            super.keyDown(with: event)
+            return
+        }
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         switch event.keyCode {
         case Key.tab where mods.contains(.shift):
@@ -186,6 +194,8 @@ final class EditorTextView: NSTextView {
                 onSubmit()   // Return-only; lets callers continue (e.g. open the next add row)
             }
         case Key.escape:
+            // A composing IME consumes Esc itself (it's handled by the `hasMarkedText()` branch
+            // above, which never reaches here while composing), so this is always a real cancel.
             onCommit()
         default:
             super.keyDown(with: event)

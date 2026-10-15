@@ -90,6 +90,8 @@ private struct MenuBarContent: View {
         Button("New List") { model.newNote() }
             .keyboardShortcut("n")   // hint + works while the menu is open; AppDelegate covers the rest
 
+        Button("Overview…") { model.openOverview() }
+
         Divider()
 
         let recent = model.notes.sorted { $0.updatedAt > $1.updatedAt }

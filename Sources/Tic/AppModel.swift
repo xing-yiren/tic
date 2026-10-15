@@ -42,6 +42,7 @@ final class AppModel {
     @ObservationIgnored private var mcpWindow: NSWindow?
     @ObservationIgnored private var settingsWindow: NSWindow?
     @ObservationIgnored private var categoriesWindow: NSWindow?
+    @ObservationIgnored private var overviewWindow: NSWindow?
 
     private init() {
         // The DB lives in Application Support; fall back to in-memory so the app still runs if
@@ -465,6 +466,55 @@ final class AppModel {
 
     func dismissCategories() {
         categoriesWindow?.orderOut(nil)
+    }
+
+    /// Opens the Overview window: every list grouped by category, with switches to put individual
+    /// lists on (or off) the desktop. A single reused, centered, floating panel like the others.
+    func openOverview() {
+        if overviewWindow == nil {
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 620, height: 560),
+                styleMask: [.titled, .closable, .fullSizeContentView],
+                backing: .buffered, defer: false
+            )
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
+            panel.isFloatingPanel = true
+            panel.level = .floating
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            panel.isMovableByWindowBackground = true
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.standardWindowButton(.closeButton)?.isHidden = true
+            panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            panel.standardWindowButton(.zoomButton)?.isHidden = true
+            panel.contentView = NSHostingView(rootView: OverviewView())
+            overviewWindow = panel
+        }
+        guard let window = overviewWindow else { return }
+        centerOnActiveDisplay(window)
+        window.level = .floating
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
+    /// Closes the Overview window (Escape / its Done button).
+    func dismissOverview() {
+        overviewWindow?.orderOut(nil)
+    }
+
+    /// Puts a note on the desktop or takes it off — the Overview's per-list switch. Routes through
+    /// the same `isOpen` open/close path the menu bar and the header X use, so a note switched on
+    /// here and left alone is restored at launch exactly as it is now.
+    func setOnDesktop(_ note: Note, visible: Bool) {
+        Task {
+            if visible {
+                await windows.openNoteByID(note.id)
+            } else {
+                await windows.closeNoteByID(note.id)
+            }
+        }
     }
 
     // MARK: - MCP (AI agents)

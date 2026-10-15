@@ -66,6 +66,12 @@ final class NotePanel: NSPanel {
     /// Borderless/utility panels don't become key by default; we need it for text editing.
     override var canBecomeKey: Bool { true }
 
+    /// A plain `NSPanel` isn't allowed to become the *main* window by default. Over another app's
+    /// full-screen Space the note only joins as key; the input method anchors its candidate window to
+    /// the main window, so without this the Pinyin candidate list doesn't appear there. Allowing main
+    /// gives the IME a window to attach to in the full-screen Space too.
+    override var canBecomeMain: Bool { true }
+
     // MARK: - Resize grip
 
     /// The bottom-right resize grip, pinned as a subview of the note's hosting view.

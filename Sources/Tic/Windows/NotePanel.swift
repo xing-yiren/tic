@@ -60,14 +60,16 @@ final class NotePanel: NSPanel {
     /// Applies the float-on-top and show-on-all-Spaces behaviours to the live window.
     func apply(floatOnTop: Bool, showOnAllSpaces: Bool) {
         var level: NSWindow.Level = floatOnTop ? .floating : .normal
-        var behavior: NSWindow.CollectionBehavior = [.fullScreenAuxiliary]
+        let behavior: NSWindow.CollectionBehavior
         if showOnAllSpaces {
-            behavior.insert(.canJoinAllSpaces)
-            // A full-screen app lives in its own Space and is presented above `.normal`; a normal-level
-            // window can't be drawn over it even with `.canJoinAllSpaces`, so an all-Spaces note would
-            // vanish when you switch to (or onto) a full-screen app. Raise to at least `.floating` so
-            // all-Spaces notes also stay visible over full-screen apps.
+            // `.canJoinAllSpaces` alone only joins the *desktop* Spaces — a full-screen app lives in
+            // its own Space that requires `.canJoinAllApplications` (macOS 13+) to enter. That flag is
+            // mutually exclusive with `.fullScreenAuxiliary`, so it replaces it here. And a full-screen
+            // Space draws above `.normal`, so the level must be raised for the note to be visible.
+            behavior = [.canJoinAllSpaces, .canJoinAllApplications]
             level = max(level, .floating)
+        } else {
+            behavior = [.fullScreenAuxiliary]
         }
         self.level = level
         collectionBehavior = behavior

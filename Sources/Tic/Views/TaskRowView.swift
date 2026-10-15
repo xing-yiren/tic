@@ -25,7 +25,7 @@ struct TaskRowView: View {
     /// ⌘Return while editing this row: insert a sibling at the same level below it. Nil when the host
     /// doesn't offer it.
     var onAddTask: (() -> Void)?
-    /// ⌥⌘Return while editing this row: insert a subtask under it. Nil when the host doesn't offer it.
+    /// ⇧⌘Return while editing this row: insert a subtask under it. Nil when the host doesn't offer it.
     var onAddSubtask: (() -> Void)?
     /// Reports hover enter/leave up to the list, which uses it to reveal the "Add subtask" affordance
     /// at the bottom of the hovered heading's group.

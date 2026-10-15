@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 /// `keyDown` gives deterministic control:
 ///   • **Return** → `onCommit` (finish)            • **Shift/Option-Return** → insert a line break
 ///   • **Shift-Tab** → `onIndent` (nest deeper)    • **Ctrl-Shift-Tab** → `onOutdent` (promote)
-///   • **⌘Return** → `onAddTask` (sibling below)   • **⌥⌘Return** → `onAddSubtask` (child below)
+///   • **⌘Return** → `onAddTask` (sibling below)   • **⇧⌘Return** → `onAddSubtask` (child below)
 ///   • **Esc** → `onCommit`
 /// It grows to fit its content via `sizeThatFits` and commits on focus loss.
 struct PlainTextEditor: NSViewRepresentable {
@@ -35,7 +35,7 @@ struct PlainTextEditor: NSViewRepresentable {
     var onOutdent: () -> Void = {}
     /// Fired on ⌘Return — "add a task below this one, at the same level".
     var onAddTask: () -> Void = {}
-    /// Fired on ⌥⌘Return — "add a subtask under this one".
+    /// Fired on ⇧⌘Return — "add a subtask under this one".
     var onAddSubtask: () -> Void = {}
     /// Fired when the editor gains (`true`) / loses (`false`) first-responder, so the note can show
     /// its contextual shortcut hints only while a field is actually being edited.
@@ -207,9 +207,9 @@ final class EditorTextView: NSTextView {
             if mods.contains(.control) { onOutdent() } else { onIndent() }
         case Key.returnKey, Key.keypadEnter:
             if mods.contains(.command) {
-                // ⌘Return adds a sibling at this level; ⌥⌘Return adds a subtask under this row.
+                // ⌘Return adds a sibling at this level; ⇧⌘Return adds a subtask under this row.
                 // Both commit *this* row first, so the new row lands after whatever was typed.
-                if mods.contains(.option) { onAddSubtask() } else { onAddTask() }
+                if mods.contains(.shift) { onAddSubtask() } else { onAddTask() }
             } else if mods.contains(.shift) || mods.contains(.option) {
                 insertText("\n", replacementRange: selectedRange())
             } else {

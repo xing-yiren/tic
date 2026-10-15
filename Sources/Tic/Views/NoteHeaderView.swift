@@ -228,7 +228,7 @@ struct NoteHeaderView: View {
             shortcut("⇧Tab", "Nest — make a subtask")
             shortcut("⌃⇧Tab", "Un-nest — promote a level")
             shortcut("⌘Return", "New task at this level")
-            shortcut("⌥⌘Return", "New subtask under this one")
+            shortcut("⇧⌘Return", "New subtask under this one")
             shortcut("Esc", "Stop editing")
         }
         .padding(14)

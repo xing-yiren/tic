@@ -245,7 +245,7 @@ struct NoteView: View {
         addingRowID = id
     }
 
-    /// Starts adding from a row being edited via ⌘Return / ⌥⌘Return: the controller has already inserted
+    /// Starts adding from a row being edited via ⌘Return / ⇧⌘Return: the controller has already inserted
 /// the empty row; route it through the same `addingRowID` auto-focus path as the hover ⊕, so the new
 /// row is focused and a rapid-add run continues from it. `nil` (e.g. already at the depth cap) is a
 /// no-op.

@@ -337,6 +337,32 @@ final class NoteController {
         return insertEmptyTask(at: spot.index, level: spot.level)
     }
 
+    /// Inserts an empty task at the *same level* as `task`, directly below `task`'s whole subtree, and
+    /// returns its id. The "add a task here" shortcut (⌘Return while editing a row): unlike
+    /// `addSibling(below:)` this is not tied to the rapid-add flow, but it lands in the same place.
+    @discardableResult
+    func addSibling(of task: TaskItem) -> UUID? {
+        guard let index = tasks.firstIndex(where: { $0.id == task.id }),
+              let spot = TaskOutline.siblingInsertion(tasks, after: index) else { return nil }
+        return insertEmptyTask(at: spot.index, level: spot.level)
+    }
+
+    /// Inserts an empty *subtask* of `task` (one level deeper), placed after `task`'s last existing
+    /// direct child so repeated invocations append in order. The "add a subtask here" shortcut
+    /// (⌥⌘Return). No-op when `task` is already at the depth cap.
+    @discardableResult
+    func addChild(of parent: TaskItem) -> UUID? {
+        guard let index = tasks.firstIndex(where: { $0.id == parent.id }) else { return nil }
+        guard parent.indentLevel < TaskItem.maxIndentLevel else { return nil }
+        let range = TaskOutline.subtreeRange(tasks, at: index)
+        let childLevel = parent.indentLevel + 1
+        var insertAt = range.upperBound
+        for j in range where tasks[j].indentLevel == childLevel {
+            insertAt = TaskOutline.subtreeRange(tasks, at: j).upperBound
+        }
+        return insertEmptyTask(at: insertAt, level: childLevel)
+    }
+
     /// Inserts an empty task at `index` with `level`, optimistically updating `tasks` and persisting
     /// the insert + full `sortIndex` renumber in one transaction. Shared by `addSubtask`/`addSibling`.
     @discardableResult

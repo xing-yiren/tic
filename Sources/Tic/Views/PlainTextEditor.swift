@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 /// `keyDown` gives deterministic control:
 ///   • **Return** → `onCommit` (finish)            • **Shift/Option-Return** → insert a line break
 ///   • **Shift-Tab** → `onIndent` (nest deeper)    • **Ctrl-Shift-Tab** → `onOutdent` (promote)
+///   • **⌘Return** → `onAddTask` (sibling below)   • **⌥⌘Return** → `onAddSubtask` (child below)
 ///   • **Esc** → `onCommit`
 /// It grows to fit its content via `sizeThatFits` and commits on focus loss.
 struct PlainTextEditor: NSViewRepresentable {
@@ -32,6 +33,10 @@ struct PlainTextEditor: NSViewRepresentable {
     var onSubmit: () -> Void = {}
     var onIndent: () -> Void = {}
     var onOutdent: () -> Void = {}
+    /// Fired on ⌘Return — "add a task below this one, at the same level".
+    var onAddTask: () -> Void = {}
+    /// Fired on ⌥⌘Return — "add a subtask under this one".
+    var onAddSubtask: () -> Void = {}
     /// Fired when the editor gains (`true`) / loses (`false`) first-responder, so the note can show
     /// its contextual shortcut hints only while a field is actually being edited.
     var onFocusChange: (Bool) -> Void = { _ in }
@@ -80,6 +85,8 @@ struct PlainTextEditor: NSViewRepresentable {
         view.onSubmit = onSubmit
         view.onIndent = onIndent
         view.onOutdent = onOutdent
+        view.onAddTask = onAddTask
+        view.onAddSubtask = onAddSubtask
         view.onFocusChange = onFocusChange
         view.onPasteImage = onPasteImage
         view.font = font
@@ -131,6 +138,8 @@ final class EditorTextView: NSTextView {
     var onSubmit: () -> Void = {}
     var onIndent: () -> Void = {}
     var onOutdent: () -> Void = {}
+    var onAddTask: () -> Void = {}
+    var onAddSubtask: () -> Void = {}
     var onFocusChange: (Bool) -> Void = { _ in }
     var onPasteImage: ((Data) -> Void)?
 
@@ -187,7 +196,11 @@ final class EditorTextView: NSTextView {
         case Key.tab where mods.contains(.shift):
             if mods.contains(.control) { onOutdent() } else { onIndent() }
         case Key.returnKey, Key.keypadEnter:
-            if mods.contains(.shift) || mods.contains(.option) {
+            if mods.contains(.command) {
+                // ⌘Return adds a sibling at this level; ⌥⌘Return adds a subtask under this row.
+                // Both commit *this* row first, so the new row lands after whatever was typed.
+                if mods.contains(.option) { onAddSubtask() } else { onAddTask() }
+            } else if mods.contains(.shift) || mods.contains(.option) {
                 insertText("\n", replacementRange: selectedRange())
             } else {
                 onCommit()

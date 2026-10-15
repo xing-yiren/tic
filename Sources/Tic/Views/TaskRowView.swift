@@ -22,6 +22,11 @@ struct TaskRowView: View {
     /// Fired when the user commits this row with Return (not Esc / focus loss). Used to chain the
     /// next subtask in the rapid-add flow.
     let onSubmit: () -> Void
+    /// ⌘Return while editing this row: insert a sibling at the same level below it. Nil when the host
+    /// doesn't offer it.
+    var onAddTask: (() -> Void)?
+    /// ⌥⌘Return while editing this row: insert a subtask under it. Nil when the host doesn't offer it.
+    var onAddSubtask: (() -> Void)?
     /// Reports hover enter/leave up to the list, which uses it to reveal the "Add subtask" affordance
     /// at the bottom of the hovered heading's group.
     let onHoverChanged: (Bool) -> Void
@@ -56,6 +61,8 @@ struct TaskRowView: View {
         onIndent: @escaping () -> Void,
         onOutdent: @escaping () -> Void,
         onSubmit: @escaping () -> Void = {},
+        onAddTask: (() -> Void)? = nil,
+        onAddSubtask: (() -> Void)? = nil,
         onHoverChanged: @escaping (Bool) -> Void = { _ in },
         image: TaskImageView? = nil,
         onPasteImage: @escaping (Data) -> Void = { _ in },
@@ -73,6 +80,8 @@ struct TaskRowView: View {
         self.onIndent = onIndent
         self.onOutdent = onOutdent
         self.onSubmit = onSubmit
+        self.onAddTask = onAddTask
+        self.onAddSubtask = onAddSubtask
         self.onHoverChanged = onHoverChanged
         self.image = image
         self.onPasteImage = onPasteImage
@@ -137,9 +146,16 @@ struct TaskRowView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if editing {
-                // Minimal hint: the nest shortcut, shown only while this row is being edited.
+                // Minimal hints, shown only while this row is being edited: the nest shortcut, and the
+                // two "add below" chords (⌘⏎ task at this level, ⌥⌘⏎ subtask under it).
                 if canNestDeeper {
                     ShortcutHint(glyphs: "⇧⇥", label: "nest", theme: theme)
+                }
+                if onAddTask != nil {
+                    ShortcutHint(glyphs: "⌘⏎", label: "task", theme: theme)
+                }
+                if onAddSubtask != nil, canNestDeeper {
+                    ShortcutHint(glyphs: "⌥⌘⏎", label: "subtask", theme: theme)
                 }
             } else if hovering {
                 if onSetDue != nil {
@@ -299,6 +315,16 @@ struct TaskRowView: View {
                 onSubmit: onSubmit,
                 onIndent: onIndent,
                 onOutdent: onOutdent,
+                // Add the new row *before* committing this one: committing a still-empty row removes
+// it, and doing that first would leave nothing for the sibling/child to anchor to.
+                onAddTask: {
+                    onAddTask?()
+                    commit()
+                },
+                onAddSubtask: {
+                    onAddSubtask?()
+                    commit()
+                },
                 onPasteImage: onPasteImage
             )
             .editorFirstBaseline()

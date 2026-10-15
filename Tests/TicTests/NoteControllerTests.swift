@@ -87,6 +87,58 @@ struct NoteControllerTests {
         #expect(c.tasks.first { $0.text == "Done" }?.isDone == true)   // tick survives the add
         #expect(c.tasks.first { $0.text == "New" }?.isDone == false)
     }
+
+    @Test("addSibling(of:) drops a new row directly below the row's subtree, at the same level")
+    func addSiblingOf() async throws {
+        let c = try await makeController()
+        c.addTask("Heading")                 // [Heading L0]
+        c.addTask("Sub", level: 1)           // [Heading L0, Sub L1]
+        let heading = try #require(c.tasks.first)
+
+        let id = try #require(c.addSibling(of: heading))   // below Heading's whole subtree, at L0
+        c.commitText(try #require(c.tasks.first { $0.id == id }), "After")
+
+        #expect(c.tasks.map(\.text) == ["Heading", "Sub", "After"])
+        #expect(c.tasks.map(\.indentLevel) == [0, 1, 0])   // sibling, not nested
+    }
+
+    @Test("addChild(of:) nests one level under the row and returns nil at the depth cap")
+    func addChildOf() async throws {
+        let c = try await makeController()
+        c.addTask("Heading")
+        let heading = try #require(c.tasks.first)
+
+        let id = try #require(c.addChild(of: heading))
+        c.commitText(try #require(c.tasks.first { $0.id == id }), "Child")
+
+        #expect(c.tasks.map(\.text) == ["Heading", "Child"])
+        #expect(c.tasks.map(\.indentLevel) == [0, 1])
+
+        // A row already at the cap can't take a child.
+        var deep = try #require(c.tasks.first { $0.text == "Child" })
+        while deep.indentLevel < TaskItem.maxIndentLevel {
+            let next = try #require(c.addChild(of: deep))
+            c.commitText(try #require(c.tasks.first { $0.id == next }), "Deep")
+            deep = try #require(c.tasks.first { $0.id == next })
+        }
+        #expect(c.addChild(of: deep) == nil)
+    }
+
+    @Test("repeated addChild(of:) appends children in order, after existing ones")
+    func addChildAppends() async throws {
+        let c = try await makeController()
+        c.addTask("Heading")
+        let heading = try #require(c.tasks.first)
+
+        let first = try #require(c.addChild(of: heading))
+        c.commitText(try #require(c.tasks.first { $0.id == first }), "One")
+        let headingRow = try #require(c.tasks.first { $0.text == "Heading" })
+        let second = try #require(c.addChild(of: headingRow))
+        c.commitText(try #require(c.tasks.first { $0.id == second }), "Two")
+
+        #expect(c.tasks.map(\.text) == ["Heading", "One", "Two"])
+        #expect(c.tasks.map(\.indentLevel) == [0, 1, 1])
+    }
 }
 
 /// The completed-display options (hide / move-to-bottom / clear), driven through the controller's

@@ -239,6 +239,15 @@ struct NoteView: View {
         addingRowID = id
     }
 
+    /// Starts adding from a row being edited via ⌘Return / ⌥⌘Return: the controller has already inserted
+/// the empty row; route it through the same `addingRowID` auto-focus path as the hover ⊕, so the new
+/// row is focused and a rapid-add run continues from it. `nil` (e.g. already at the depth cap) is a
+/// no-op.
+    private func focusingNewRow(_ id: TaskItem.ID?) {
+        guard let id else { return }
+        addingRowID = id
+    }
+
     /// Continues a rapid-add run: when the active add row is committed with Return, open a fresh
     /// sibling just below it at the same level and focus it. An empty row was already removed by the
     /// commit, so `addSibling` finds nothing and returns nil — which ends the run. Only the active
@@ -287,6 +296,8 @@ struct NoteView: View {
             onIndent: { controller.indent(task) },
             onOutdent: { controller.outdent(task) },
             onSubmit: { continueAdding(after: task) },
+            onAddTask: { focusingNewRow(controller.addSibling(of: task)) },
+            onAddSubtask: { focusingNewRow(controller.addChild(of: task)) },
             onHoverChanged: { hovering in
                 if hovering { withAnimation(.easeInOut(duration: 0.12)) { activeSectionID = sectionRootID(of: task) } }
             },

@@ -175,7 +175,16 @@ final class EditorTextView: NSTextView {
 
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
-        if ok { onFocusChange(true) }
+        if ok {
+            // Focusing a text field is certainly "the user is typing here", so make sure Tic is the
+            // active app — the input method only shows its candidate window for the active app, and a
+            // non-activating note panel can otherwise take the keyboard while Tic stays in the
+            // background. (See `NotePanel.becomeKey`.)
+            if NSApp.activationPolicy() == .regular, !NSApp.isActive {
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            onFocusChange(true)
+        }
         return ok
     }
 

@@ -73,6 +73,25 @@ final class NotePanel: NSPanel {
     /// Borderless/utility panels don't become key by default; we need it for text editing.
     override var canBecomeKey: Bool { true }
 
+    /// Bringing a note into focus must also make **Tic the active application**. The panel is a
+    /// `.nonactivatingPanel`, so clicking it hands it the keyboard *without* activating the app — and
+    /// macOS shows an input method's candidate window only for the active app. That's why letters from
+    /// a Pinyin composition would appear in the field but no candidate list popped up. Activating
+    /// here (the moment the panel becomes key/main) makes the IME behave normally.
+    override func becomeKey() {
+        super.becomeKey()
+        if NSApp.activationPolicy() == .regular, !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    override func becomeMain() {
+        super.becomeMain()
+        if NSApp.activationPolicy() == .regular, !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
     // MARK: - Resize grip
 
     /// A small child window pinned to the bottom-right corner that drags the note's corner to

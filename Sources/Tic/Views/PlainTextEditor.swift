@@ -66,8 +66,12 @@ struct PlainTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ view: EditorTextView, context: Context) {
-        if view.string != text { view.string = text }
-        configure(view)
+        // Leave a composing editor completely alone — see `configure`. Reassigning `string` or the
+        // text attributes mid-composition would drop the IME's marked text and its candidate window.
+        if !view.hasMarkedText() {
+            if view.string != text { view.string = text }
+            configure(view)
+        }
         if focusRequest != context.coordinator.focusRequest {
             context.coordinator.focusRequest = focusRequest
             // Deferred: taking first responder mid-update would fire `onFocusChange` during a view update.
@@ -81,6 +85,7 @@ struct PlainTextEditor: NSViewRepresentable {
     }
 
     private func configure(_ view: EditorTextView) {
+        // The action closures are cheap and must always be current.
         view.onCommit = onCommit
         view.onSubmit = onSubmit
         view.onIndent = onIndent
@@ -89,6 +94,12 @@ struct PlainTextEditor: NSViewRepresentable {
         view.onAddSubtask = onAddSubtask
         view.onFocusChange = onFocusChange
         view.onPasteImage = onPasteImage
+        // Never touch the text attributes while an input method is composing. `updateNSView` runs on
+        // every SwiftUI re-render — and typing fires `textDidChange` → a re-render each keystroke — so
+        // reassigning `font`/`textColor` (or the rich-text flags) mid-composition rewrites the text
+        // storage, drops the marked text, and dismisses the IME's candidate window. Leave everything
+        // alone until the composition ends.
+        guard !view.hasMarkedText() else { return }
         view.font = font
         view.textColor = NSColor(textColor)
         view.drawsBackground = false

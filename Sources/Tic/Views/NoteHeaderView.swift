@@ -14,6 +14,7 @@ struct NoteHeaderView: View {
     @State private var showColorPopover = false
     @State private var showCompletedPopover = false
     @State private var showClearConfirm = false
+    @State private var showHelp = false
     @State private var hoverClose = false
 
     private var note: Note { controller.note }
@@ -75,6 +76,7 @@ struct NoteHeaderView: View {
             completedButton
             if controller.completedCount > 0 { clearButton }
             Spacer(minLength: 0)
+            helpButton
             collapseButton
             floatButton
             closeButton
@@ -197,6 +199,61 @@ struct NoteHeaderView: View {
     private var collapseButton: some View {
         iconButton(systemName: "chevron.up", isActive: false, help: "Roll up (collapse)") {
             controller.toggleCollapsed()
+        }
+    }
+
+    /// A "keyboard shortcuts" popover. The task-row chords (nest / add task / add subtask) used to be
+    /// shown inline while editing, but they crowded the text field; this keeps them discoverable
+    /// without stealing space from what you're typing.
+    private var helpButton: some View {
+        Button { showHelp.toggle() } label: {
+            Image(systemName: "questionmark.circle")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(showHelp ? theme.accent : theme.secondary)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Keyboard shortcuts")
+        .popover(isPresented: $showHelp, arrowEdge: .bottom) { shortcutList }
+    }
+
+    private var shortcutList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Keyboard shortcuts")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            shortcut("Return", "Save and start the next task")
+            shortcut("⇧Return", "New line inside a task")
+            shortcut("⇧Tab", "Nest — make a subtask")
+            shortcut("⌃⇧Tab", "Un-nest — promote a level")
+            shortcut("⌘Return", "New task at this level")
+            shortcut("⌥⌘Return", "New subtask under this one")
+            shortcut("Esc", "Stop editing")
+        }
+        .padding(14)
+        .frame(width: 260)
+    }
+
+    private func shortcut(_ glyphs: String, _ label: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(glyphs)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1.5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(theme.accent.opacity(0.13))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(theme.accent.opacity(0.22), lineWidth: 0.5)
+                )
+                .frame(width: 66, alignment: .leading)
+            Text(label)
+                .font(.system(size: 11.5))
+                .foregroundStyle(theme.secondary)
+            Spacer(minLength: 0)
         }
     }
 

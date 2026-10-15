@@ -93,7 +93,6 @@ struct TaskRowView: View {
     }
 
     private var baseColor: Color { task.isDone ? theme.completed : theme.task }
-    private var canNestDeeper: Bool { task.indentLevel < TaskItem.maxIndentLevel }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -145,19 +144,7 @@ struct TaskRowView: View {
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            if editing {
-                // Minimal hints, shown only while this row is being edited: the nest shortcut, and the
-                // two "add below" chords (⌘⏎ task at this level, ⌥⌘⏎ subtask under it).
-                if canNestDeeper {
-                    ShortcutHint(glyphs: "⇧⇥", label: "nest", theme: theme)
-                }
-                if onAddTask != nil {
-                    ShortcutHint(glyphs: "⌘⏎", label: "task", theme: theme)
-                }
-                if onAddSubtask != nil, canNestDeeper {
-                    ShortcutHint(glyphs: "⌥⌘⏎", label: "subtask", theme: theme)
-                }
-            } else if hovering {
+            if hovering, !editing {
                 if onSetDue != nil {
                     Button { showDueEditor = true } label: {
                         Image(systemName: reminder != nil ? "bell.badge" : "calendar.badge.clock")

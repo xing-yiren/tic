@@ -3,7 +3,9 @@ import SwiftUI
 
 /// A single sticky note window. A titled panel with a hidden, transparent title bar gives us
 /// rounded corners, a system shadow, and edge resizing for free, while `fullSizeContentView`
-/// lets the SwiftUI content cover the whole surface.
+/// lets the SwiftUI content cover the whole surface. `.nonactivatingPanel` lets a note take the
+/// keyboard without forcing Tic forward — and, crucially, it's what lets an all-Spaces note be shown
+/// over another app's full-screen Space (together with `canJoinAllSpaces`).
 final class NotePanel: NSPanel {
     let noteID: UUID
 
@@ -11,13 +13,9 @@ final class NotePanel: NSPanel {
         self.noteID = note.id
 
         let rect = NSRect(x: note.frameX, y: note.frameY, width: note.frameW, height: note.frameH)
-        // NOTE: deliberately *not* `.nonactivatingPanel`. That style lets a panel take the keyboard
-        // without activating the app, and macOS only shows an input method's candidate window for the
-        // active application — so a non-activating note swallowed Pinyin compositions with no
-        // candidate list. Notes now activate Tic (like any window) so the IME behaves normally.
         super.init(
             contentRect: rect,
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -59,35 +57,14 @@ final class NotePanel: NSPanel {
 
     /// Applies the float-on-top and show-on-all-Spaces behaviours to the live window.
     func apply(floatOnTop: Bool, showOnAllSpaces: Bool) {
-        var level: NSWindow.Level = floatOnTop ? .floating : .normal
-        let behavior: NSWindow.CollectionBehavior
-        if showOnAllSpaces {
-            // `.canJoinAllSpaces` alone only joins the *desktop* Spaces — a full-screen app lives in
-            // its own Space that requires `.canJoinAllApplications` (macOS 13+) to enter. That flag is
-            // mutually exclusive with `.fullScreenAuxiliary`, so it replaces it here. And a full-screen
-            // Space draws above `.normal`, so the level must be raised for the note to be visible.
-            behavior = [.canJoinAllSpaces, .canJoinAllApplications]
-            level = max(level, .floating)
-        } else {
-            behavior = [.fullScreenAuxiliary]
-        }
-        self.level = level
+        level = floatOnTop ? .floating : .normal
+        var behavior: NSWindow.CollectionBehavior = [.fullScreenAuxiliary]
+        if showOnAllSpaces { behavior.insert(.canJoinAllSpaces) }
         collectionBehavior = behavior
     }
 
     /// Borderless/utility panels don't become key by default; we need it for text editing.
     override var canBecomeKey: Bool { true }
-
-    /// Bringing a note into focus must also make **Tic the active application**: macOS shows an input
-    /// method's candidate window only for the active app, so a note that took the keyboard while Tic
-    /// stayed in the background swallowed Pinyin compositions with no candidate list. Activating here
-    /// (the moment the panel becomes key) makes the IME behave normally.
-    override func becomeKey() {
-        super.becomeKey()
-        if NSApp.activationPolicy() == .regular, !NSApp.isActive {
-            NSApp.activate(ignoringOtherApps: true)
-        }
-    }
 
     // MARK: - Resize grip
 

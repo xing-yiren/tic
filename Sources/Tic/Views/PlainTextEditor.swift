@@ -176,12 +176,13 @@ final class EditorTextView: NSTextView {
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
         if ok {
-            // Focusing a text field is certainly "the user is typing here", so make sure Tic is the
-            // active app — the input method only shows its candidate window for the active app, and a
-            // non-activating note panel can otherwise take the keyboard while Tic stays in the
-            // background. (See `NotePanel.becomeKey`.)
+            // Each note is a non-activating panel, so clicking one hands it the keyboard without
+            // activating Tic. macOS only shows an input method's candidate window for the active
+            // application, so we activate Tic the moment a text field takes focus — "the user is
+            // typing here" — giving the IME a normal context. Deferred slightly so an
+            // activate-while-becoming-key doesn't get swallowed by the in-flight focus change.
             if NSApp.activationPolicy() == .regular, !NSApp.isActive {
-                NSApp.activate(ignoringOtherApps: true)
+                DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
             }
             onFocusChange(true)
         }

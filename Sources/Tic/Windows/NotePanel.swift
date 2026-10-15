@@ -3,8 +3,7 @@ import SwiftUI
 
 /// A single sticky note window. A titled panel with a hidden, transparent title bar gives us
 /// rounded corners, a system shadow, and edge resizing for free, while `fullSizeContentView`
-/// lets the SwiftUI content cover the whole surface. `nonactivatingPanel` keeps clicking a note
-/// from yanking the whole app forward — it behaves like a desktop sticky.
+/// lets the SwiftUI content cover the whole surface.
 final class NotePanel: NSPanel {
     let noteID: UUID
 
@@ -12,9 +11,13 @@ final class NotePanel: NSPanel {
         self.noteID = note.id
 
         let rect = NSRect(x: note.frameX, y: note.frameY, width: note.frameW, height: note.frameH)
+        // NOTE: deliberately *not* `.nonactivatingPanel`. That style lets a panel take the keyboard
+        // without activating the app, and macOS only shows an input method's candidate window for the
+        // active application — so a non-activating note swallowed Pinyin compositions with no
+        // candidate list. Notes now activate Tic (like any window) so the IME behaves normally.
         super.init(
             contentRect: rect,
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel],
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -38,26 +41,18 @@ final class NotePanel: NSPanel {
         standardWindowButton(.zoomButton)?.isHidden = true
 
         // The hidden traffic-light buttons also disable the standard title-bar resize grip, so a note
-        // could only be resized by its edges. Add a visible grip in the bottom-right corner (a
-        // non-opaque child window, so it survives the transparent panel) that drags the frame.
-        let grip = ResizeGripView(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
-        grip.onResize = { [weak self] delta in self?.resizeBy(delta) }
-        let gripWindow = NSWindow(
-            contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false
-        )
-        gripWindow.isOpaque = false
-        gripWindow.backgroundColor = .clear
-        gripWindow.hasShadow = false
-        gripWindow.ignoresMouseEvents = false
-        gripWindow.contentView = grip
-        gripWindow.isReleasedWhenClosed = false
-        addChildWindow(gripWindow, ordered: .above)
-        resizeGripWindow = gripWindow
-        layoutResizeGrip()
-
+        // could only be resized by its edges. Add a visible grip in the bottom-right corner, as a plain
+        // subview of the hosting view — NOT a child window, which would tie the note to one Space.
         let hosting = NSHostingView(rootView: content)
         hosting.autoresizingMask = [.width, .height]
         contentView = hosting
+
+        let grip = ResizeGripView(frame: NSRect(x: 0, y: 0, width: ResizeGripView.side, height: ResizeGripView.side))
+        grip.autoresizingMask = [.minXMargin, .maxYMargin]
+        grip.onResize = { [weak self] delta in self?.resizeBy(delta) }
+        hosting.addSubview(grip)
+        resizeGrip = grip
+        layoutResizeGrip()
 
         apply(floatOnTop: note.floatOnTop, showOnAllSpaces: note.showOnAllSpaces)
     }
@@ -73,11 +68,10 @@ final class NotePanel: NSPanel {
     /// Borderless/utility panels don't become key by default; we need it for text editing.
     override var canBecomeKey: Bool { true }
 
-    /// Bringing a note into focus must also make **Tic the active application**. The panel is a
-    /// `.nonactivatingPanel`, so clicking it hands it the keyboard *without* activating the app — and
-    /// macOS shows an input method's candidate window only for the active app. That's why letters from
-    /// a Pinyin composition would appear in the field but no candidate list popped up. Activating
-    /// here (the moment the panel becomes key/main) makes the IME behave normally.
+    /// Bringing a note into focus must also make **Tic the active application**: macOS shows an input
+    /// method's candidate window only for the active app, so a note that took the keyboard while Tic
+    /// stayed in the background swallowed Pinyin compositions with no candidate list. Activating here
+    /// (the moment the panel becomes key) makes the IME behave normally.
     override func becomeKey() {
         super.becomeKey()
         if NSApp.activationPolicy() == .regular, !NSApp.isActive {
@@ -85,27 +79,15 @@ final class NotePanel: NSPanel {
         }
     }
 
-    override func becomeMain() {
-        super.becomeMain()
-        if NSApp.activationPolicy() == .regular, !NSApp.isActive {
-            NSApp.activate(ignoringOtherApps: true)
-        }
-    }
-
     // MARK: - Resize grip
 
-    /// A small child window pinned to the bottom-right corner that drags the note's corner to
-    /// resize it (the traffic lights being hidden disables the standard grip).
-    private var resizeGripWindow: NSWindow?
+    /// The bottom-right resize grip, pinned as a subview of the note's hosting view.
+    private var resizeGrip: ResizeGripView?
 
-    /// Pins the grip window to the bottom-right corner of the note, inside the frame.
     private func layoutResizeGrip() {
-        guard let grip = resizeGripWindow else { return }
+        guard let grip = resizeGrip, let host = contentView else { return }
         let side = ResizeGripView.side
-        grip.setFrame(
-            NSRect(x: frame.width - side - 1, y: 1, width: side, height: side),
-            display: false
-        )
+        grip.frame = NSRect(x: host.bounds.maxX - side, y: 0, width: side, height: side)
     }
 
     /// Resizes by a drag *delta* measured in the grip's window coordinates (origin bottom-left, so

@@ -361,8 +361,7 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     // MARK: - Image window
 
     /// Shows a task's image in the image window, creating the window on first use. It takes the note's
-    /// window level, so it opens above a float-on-top note, and activates the app so it comes up in front
-    /// (notes are non-activating panels).
+    /// window level, so it opens above a float-on-top note, and activates the app so it comes up in front.
     private func showImageWindow(controller: NoteController, taskId: UUID, from panel: NotePanel) {
         let window = imageWindow ?? ImageWindow()
         imageWindow = window

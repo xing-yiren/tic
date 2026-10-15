@@ -166,7 +166,13 @@ struct NoteView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(display.enumerated()), id: \.element.id) { index, task in
                         if isDragging, dropIndex == index { dropIndicator(level: dropLevel) }
-                        row(task)
+                        // `addingRowID` is an id (not the tasks array) so a typing-driven re-render
+                        // does NOT rebuild this row while it's being edited or composed in — a
+                        // structural rebuild mid-composition re-enters the editor and can drop the
+                        // input method's candidate window. Changing it does update autoEdit, so a
+                        // rapid-add run still opens the next row. (`row(_:)` is called, not the
+                        // autoclosured `ForEach` overload.)
+                        row(task).onChange(of: addingRowID) { _, _ in }
                         if let add, add.afterIndex == index {
                             AddSubtaskRow(
                                 theme: theme,

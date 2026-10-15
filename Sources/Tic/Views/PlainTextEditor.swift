@@ -45,11 +45,10 @@ struct PlainTextEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> EditorTextView {
         let view = EditorTextView()
-        // macOS 14 NSTextViews default to TextKit 2, where `layoutManager` is nil. Touching the
-        // property forces TextKit 1 (a documented compatibility fallback), so `layoutManager` and
-        // `usedRect` are available to measure content height — without it multiline text would be
-        // clipped to a single line.
-        _ = view.layoutManager
+        // Stay on the default text engine (TextKit 2 on macOS 14+). Reaching for `layoutManager`
+        // forces a half-migrated TextKit 1 fallback, and that legacy compatibility path is what was
+        // breaking the input method here — the Pinyin candidate window never appeared. Height is now
+        // measured against whichever engine is active (see `fittingHeight`).
         view.delegate = context.coordinator
         view.isVerticallyResizable = true
         view.isHorizontallyResizable = false
@@ -263,11 +262,24 @@ final class EditorTextView: NSTextView {
     }
 
     /// Height needed to lay the current text out at `width`, clamped to at least one line.
+    ///
+    /// Reads whichever text engine is active. We no longer force TextKit 1 (that legacy fallback
+    /// broke the input method), so we prefer TextKit 2's `textLayoutManager` and only fall back to
+    /// the TextKit 1 `layoutManager` when the system actually gave us one. Both paths lay the text out
+    /// at `width` first, since width tracking is off and the engine's cached layout may be stale.
     func fittingHeight(forWidth width: CGFloat) -> CGFloat {
-        guard let layoutManager, let container = textContainer else { return lineHeight }
-        container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
-        layoutManager.ensureLayout(for: container)
-        let used = layoutManager.usedRect(for: container).height
+        guard let container = textContainer else { return lineHeight }
+        container.size = NSSize(width: width, height: .greatestFiniteMagnitude)
+        let used: CGFloat
+        if let textLayoutManager {
+            textLayoutManager.ensureLayout(for: textLayoutManager.documentRange)
+            used = textLayoutManager.usageBoundsForTextContainer.height
+        } else if let layoutManager {
+            layoutManager.ensureLayout(for: container)
+            used = layoutManager.usedRect(for: container).height
+        } else {
+            used = lineHeight
+        }
         return ceil(max(used, lineHeight)) + textContainerInset.height * 2
     }
 

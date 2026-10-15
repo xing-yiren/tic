@@ -93,40 +93,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         await action(task)
     }
 
-    /// ⌘N → New Note while Tic is the active app. A menu-style `MenuBarExtra` button's
-    /// `keyboardShortcut` only fires while that menu is open, so we dispatch it ourselves via a
-    /// local key monitor (fires whenever any Tic window is key).
+    /// ⌘N → New Note, ⌘O → Overview while Tic is the active app. A menu-style `MenuBarExtra`
+    /// button's `keyboardShortcut` only fires while that menu is open, so we dispatch these
+    /// ourselves via a local key monitor (fires whenever any Tic window is key).
     private func installNewNoteShortcut() {
         newNoteKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             // Membership test (not == .command) so Caps Lock / Fn in the flags don't break it,
-            // and case-insensitive so "N" under Caps Lock still matches.
+            // and case-insensitive so "N"/"O" under Caps Lock still match.
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             guard flags.contains(.command),
-                  !flags.contains(.shift), !flags.contains(.option), !flags.contains(.control),
-                  event.charactersIgnoringModifiers?.lowercased() == "n" else { return event }
-            Task { @MainActor in AppModel.shared.newNote() }
-            return nil   // consume
+                  !flags.contains(.shift), !flags.contains(.option), !flags.contains(.control) else { return event }
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "n":
+                Task { @MainActor in AppModel.shared.newNote() }
+                return nil   // consume
+            case "o":
+                Task { @MainActor in AppModel.shared.openOverview() }
+                return nil   // consume
+            default:
+                return event
+            }
         }
     }
 
-    /// Click the Dock icon with no notes on screen → open the Lists palette, so the app never
-    /// looks dead after every note was closed.
+    /// Click the Dock icon with no notes on screen → open the Overview, so the app never looks
+    /// dead after every note was closed and there's one obvious place to pick what to bring back.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        if AppModel.shared.windows.openCount == 0 { AppModel.shared.openSearch() }
+        if AppModel.shared.windows.openCount == 0 { AppModel.shared.openOverview() }
         return true
     }
 
-    /// Right-click the Dock icon → New List.
+    /// Right-click the Dock icon → New List, Overview.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
-        let item = NSMenuItem(title: "New List", action: #selector(newListFromDock), keyEquivalent: "")
-        item.target = self
-        menu.addItem(item)
+        let newItem = NSMenuItem(title: "New List", action: #selector(newListFromDock), keyEquivalent: "")
+        newItem.target = self
+        menu.addItem(newItem)
+        let overviewItem = NSMenuItem(title: "Overview", action: #selector(overviewFromDock), keyEquivalent: "")
+        overviewItem.target = self
+        menu.addItem(overviewItem)
         return menu
     }
 
     @objc private func newListFromDock() {
         AppModel.shared.newNote()
+    }
+
+    @objc private func overviewFromDock() {
+        AppModel.shared.openOverview()
     }
 }
 

@@ -91,6 +91,7 @@ private struct MenuBarContent: View {
             .keyboardShortcut("n")   // hint + works while the menu is open; AppDelegate covers the rest
 
         Button("Overview…") { model.openOverview() }
+            .keyboardShortcut("o")   // hint; AppDelegate dispatches ⌘O globally
 
         Divider()
 

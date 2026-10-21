@@ -74,7 +74,13 @@ struct PlainTextEditor: NSViewRepresentable {
         if focusRequest != context.coordinator.focusRequest {
             context.coordinator.focusRequest = focusRequest
             // Deferred: taking first responder mid-update would fire `onFocusChange` during a view update.
-            Task { @MainActor in view.window?.makeFirstResponder(view) }
+            Task { @MainActor in
+                // Already the first responder: re-assigning it would resign and re-take the input
+                // context for no reason — and a reset input context can drop the IME back to the
+                // default (English) source mid-typing.
+                guard let window = view.window, window.firstResponder !== view else { return }
+                window.makeFirstResponder(view)
+            }
         }
     }
 
@@ -176,16 +182,20 @@ final class EditorTextView: NSTextView {
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
         if ok {
-            // Each note is a non-activating panel, so clicking one hand it the keyboard without
+            // Each note is a non-activating panel, so clicking one hands it the keyboard without
             // activating Tic. macOS only shows an input method's candidate window for the active
             // application, so activate Tic the moment a text field takes focus — "the user is typing
             // here". Deferred a tick so it isn't swallowed by the in-flight focus change.
+            //
+            // Both steps are guarded: when Tic (and this window) are already frontmost they are
+            // needless re-assertions of the input context, and a reset one can switch the user's IME
+            // away from the source they were typing in.
             if let window {
                 DispatchQueue.main.async {
                     if NSApp.activationPolicy() == .regular, !NSApp.isActive {
                         NSApp.activate(ignoringOtherApps: true)
                     }
-                    window.makeKeyAndOrderFront(nil)
+                    if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
                 }
             }
             onFocusChange(true)

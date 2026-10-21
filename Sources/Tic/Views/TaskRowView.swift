@@ -265,6 +265,16 @@ struct TaskRowView: View {
         }
         .padding(14)
         .frame(width: 288)
+        // A note is a non-activating panel, and a default button's Return key-equivalent is
+        // dispatched app-wide. While this popover was up it became the window's default button, so
+        // Return could act on it instead of the row being typed in — briefly taking the keyboard
+        // and dropping that editor's input context (the IME then came back in English). The
+        // popover's controls apply immediately; Esc still closes it.
+        .onAppear { enclosingWindow?.defaultButtonCell = nil }
+    }
+
+    private var enclosingWindow: NSWindow? {
+        NSApp.keyWindow ?? NSApp.mainWindow
     }
 
     /// The deadline a fresh picker starts at: the next round hour.

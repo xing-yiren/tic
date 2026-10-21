@@ -32,6 +32,10 @@ final class NoteController {
     /// `NoteWindowManager` so the controller stays AppKit-free.
     @ObservationIgnored var onApplyBehavior: ((Bool, Bool) -> Void)?
 
+    /// Asks the manager to re-run its full-screen policy (e.g. after the pin was toggled, so the
+    /// note is taken off / put back onto another app's full-screen Space straight away).
+    @ObservationIgnored var onWindowBehaviorChanged: (() -> Void)?
+
     /// Asks the manager to close (hide) this note's panel. Does NOT delete the note.
     @ObservationIgnored var onClose: (() -> Void)?
 
@@ -141,6 +145,7 @@ final class NoteController {
         note = updated
         if old.floatOnTop != updated.floatOnTop || old.showOnAllSpaces != updated.showOnAllSpaces {
             onApplyBehavior?(updated.floatOnTop, updated.showOnAllSpaces)
+            onWindowBehaviorChanged?()
         }
         if old.isCollapsed != updated.isCollapsed {
             onSetCollapsed?(updated.isCollapsed)
@@ -596,6 +601,7 @@ extension NoteController {
         let showOnAllSpaces = note.showOnAllSpaces
         let isCollapsed = note.isCollapsed
         onApplyBehavior?(floatOnTop, showOnAllSpaces)   // update the live window at once
+        onWindowBehaviorChanged?()                       // …and leave/join a full-screen Space now
         Task { [db] in
             try? await db.updateNoteFlags(
                 id: id, floatOnTop: floatOnTop,

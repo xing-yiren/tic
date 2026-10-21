@@ -4,9 +4,10 @@ import SwiftUI
 /// A single sticky note window. A titled panel with a hidden, transparent title bar gives us
 /// rounded corners, a system shadow, and edge resizing for free, while `fullSizeContentView`
 /// lets the SwiftUI content cover the whole surface. `.nonactivatingPanel` lets a note take the
-/// keyboard without forcing Tic forward — and, crucially, it's what lets an all-Spaces note be shown
-/// over another app's full-screen Space (together with `canJoinAllSpaces`).
-final class NotePanel: NSPanel {
+/// keyboard without forcing Tic forward — and, together with `canJoinAllSpaces`, it's what lets a
+/// note follow across Spaces without activating Tic. Whether a note also appears over another
+/// app's full-screen Space is decided by the pin (`apply(floatOnTop:showOnAllSpaces:)`).
+class NotePanel: NSPanel {
     let noteID: UUID
 
     init(note: Note, content: AnyView) {
@@ -55,16 +56,121 @@ final class NotePanel: NSPanel {
         apply(floatOnTop: note.floatOnTop, showOnAllSpaces: note.showOnAllSpaces)
     }
 
+    /// Whether this note is pinned ("keep on top"). Pinned notes sit at a floating level and stay
+    /// in the WindowServer's on-screen list across activation (so they show over other apps,
+    /// including a full-screen one). Unpinned notes are ordinary windows — see `orderFront`.
+    private(set) var isPinned = false
+
     /// Applies the float-on-top and show-on-all-Spaces behaviours to the live window.
     func apply(floatOnTop: Bool, showOnAllSpaces: Bool) {
+        isPinned = floatOnTop
         level = floatOnTop ? .floating : .normal
-        var behavior: NSWindow.CollectionBehavior = [.fullScreenAuxiliary]
+        // Being pinned is what lets a note ride into another app's full-screen Space. An unpinned
+        // note is an ordinary window: it stays on its own Space (free to be covered by other windows)
+        // and is left behind when an app goes full screen. `fullScreenAuxiliary` has to be *assigned*,
+        // not merely omitted — `NSPanel` carries it by default, so an unset behaviour still joined
+        // full-screen Spaces.
+        //
+        // `canJoinAllSpaces` "show on all desktops" is about the user's own desktop Spaces; it does
+        // not by itself put an unpinned note into another app's full-screen Space. `canJoinAllSpaces`
+        // is the user's setting and is honoured for both states; `.fullScreenAuxiliary` is what lets a
+        // note ride along with a full-screen app, so only the pin grants it.
+        var behavior: NSWindow.CollectionBehavior = []
         if showOnAllSpaces { behavior.insert(.canJoinAllSpaces) }
+        if floatOnTop { behavior.insert(.fullScreenAuxiliary) }
         collectionBehavior = behavior
     }
 
     /// Borderless/utility panels don't become key by default; we need it for text editing.
     override var canBecomeKey: Bool { true }
+
+    /// Set by the window manager while another app is full screen: an unpinned note must not be put
+    /// on screen at all then, whichever path asks for it (a click, an agent, a restore) — a
+    /// full-screen app's Space covers the desktop, so an ordinary window shown "behind" it would
+    /// still be visible.
+    private(set) var suppressedByFullScreen: Bool = false
+
+    func applyFullScreenSuppression(_ suppressed: Bool) {
+        guard suppressed != suppressedByFullScreen else { return }
+        suppressedByFullScreen = suppressed
+        // Lifting the hold doesn't show the note (the manager decides when), but a note that was
+        // ordered out must not come back until then.
+        if suppressed { orderOut(nil) }
+    }
+
+    /// Every way of putting the panel on screen funnels through here, so the full-screen rule can't
+    /// be bypassed by one stray `orderFront`.
+    private var mayShow: Bool { isPinned || !suppressedByFullScreen }
+
+    // MARK: - Ordering
+
+    /// An unpinned note is an ordinary window.
+    ///
+    /// All note panels are *non-activating*, which lets them take the keyboard without activating
+    /// Tic. `orderFrontRegardless` would put such a panel in front of everything — other apps
+    /// included — and into another app's full-screen Space, which is exactly what "unpinned" must
+    /// not do. So an unpinned note is ordered plainly (see `showAsOrdinaryWindow`): it shows on its
+    /// own Space and other windows can cover it.
+    ///
+    /// Pinned notes are ordered plainly too, but at the floating level — above every ordinary window,
+    /// wherever the user is.
+    override func orderFront(_ sender: Any?) {
+        guard mayShow else { return }
+        if isPinned {
+            super.orderFront(sender)
+        } else {
+            showAsOrdinaryWindow()
+        }
+    }
+
+    /// What an unpinned note does instead of being ordered over everything. Separate from
+    /// `orderFrontRegardless()` so the intent is greppable (and testable): the note is shown the way
+    /// this app shows any of its windows — on its own Space, at level 0, free to be covered.
+    func showAsOrdinaryWindow() {
+        guard mayShow else { return }
+        // `orderFront` — deliberately *not* `orderFrontRegardless`. "Regardless" (analysis of the
+        // non-activating panel's ordering) is what makes a note stay above other apps' windows and
+        // ride into a full-screen Space; plain `orderFront` shows it as this app's ordinary window,
+        // which other apps cover and which stays off another app's full-screen Space. It works even
+        // while Tic is inactive, which is the case for every restore.
+        super.orderFront(nil)
+    }
+
+    /// Whether the note is on the current Space but not on the screen — i.e. it is *on* this
+    /// desktop, but the window was ordered out (by the system, as display sleep and the screen
+    /// lock do), rather than simply living on another Space.
+    ///
+    /// `isVisible` alone can't tell the two apart: a window on another Space is not "visible"
+    /// either, and treating that as "dropped" would drag notes into whatever Space the user is
+    /// looking at.
+    var wasOrderedOut: Bool { isOnActiveSpace && !isVisible }
+
+    /// Shows the note without making it the user's active window: a launch restore, or a note an
+    /// agent wrote to in the background. `raise: false` (the default) never puts an unpinned note
+    /// above whatever is frontmost; a pinned note floats anyway. Pass `raise: true` only for an
+    /// explicit "show me this" from the user.
+    func showInBackground(raise: Bool) {
+        if raise || isPinned { raiseRegardless() } else { showAsOrdinaryWindow() }
+    }
+
+    override func makeKeyAndOrderFront(_ sender: Any?) {
+        guard mayShow else { return }
+        super.makeKeyAndOrderFront(sender)
+    }
+
+    /// Belt and braces: the one ordering call that needs no app-level checks is declined while
+    /// suppressed too, so no caller can slip a note into a full-screen Space through it.
+    override func orderFrontRegardless() {
+        guard mayShow else { return }
+        super.orderFrontRegardless()
+    }
+
+    /// Forces the note to the front of its level, whatever the pin state — for an explicit request
+    /// (e.g. the `focus_note` MCP tool) rather than an incidental restore.
+    func raiseRegardless() {
+        guard mayShow else { return }
+        orderFrontRegardless()
+    }
 
     // MARK: - Resize grip
 

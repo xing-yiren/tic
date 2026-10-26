@@ -164,12 +164,21 @@ final class NoteController {
         let clamped = min(max(level, 0), maxLevel)
         let task = TaskItem(noteId: noteID, text: text, sortIndex: tasks.count, indentLevel: clamped)
         tasks += [task]   // optimistic so the row appears instantly
+        // The new row is never done, so a completed parent would be wrong: bubble the not-done state
+        // up so adding a subtask under a completed task reopens it.
+        let chain = Array(TaskOutline.ancestorChain(tasks, of: tasks.count - 1).reversed())
+        let reopened = TaskOutline.recomputingAncestors(tasks, ancestors: chain, now: Date())
+        let completionUpdates = completionChanges(from: tasks, to: reopened)
+        tasks = reopened
         if let imageData {
             imageCrops[task.id] = TaskImage.fullCrop
             loadThumbnail(task.id, data: imageData)
         }
         // insertTask assigns the real sortIndex (MAX+1)
-        Task { [db] in try? await db.insertTask(task, imageData: imageData) }
+        Task { [db] in
+            try? await db.insertTask(task, imageData: imageData)
+            if !completionUpdates.isEmpty { try? await db.updateTaskCompletion(completionUpdates) }
+        }
     }
 
     // MARK: - Quick-add image
@@ -375,10 +384,19 @@ final class NoteController {
         let task = TaskItem(noteId: noteID, text: "", sortIndex: index, indentLevel: level)
         var ordered = tasks
         ordered.insert(task, at: index)
+        // A new row is never done, so a completed parent (with its subtree struck through) would be
+        // wrong: bubble the not-done state up so newly adding a subtask reopens it.
+        let chain = Array(TaskOutline.ancestorChain(ordered, of: index).reversed())
+        let reopened = TaskOutline.recomputingAncestors(ordered, ancestors: chain, now: Date())
+        let completionUpdates = completionChanges(from: ordered, to: reopened)
+        ordered = reopened
         tasks = ordered   // optimistic
         let snapshot = task
         let orderedSnapshot = ordered
-        Task { [db] in try? await db.insertTask(snapshot, reordering: orderedSnapshot) }
+        Task { [db] in
+            try? await db.insertTask(snapshot, reordering: orderedSnapshot)
+            if !completionUpdates.isEmpty { try? await db.updateTaskCompletion(completionUpdates) }
+        }
         return task.id
     }
 
@@ -427,13 +445,24 @@ final class NoteController {
         Task { [db] in try? await db.update(snapshot) }
     }
 
-    /// Deletes a single task. Its subtasks are kept (not cascade-deleted); the survivors are
-    /// renormalised so a now-orphaned subtask can't render at an impossible depth. Tick states are
-    /// left as-is (structural edits never change completion).
+    /// Deletes a task together with its whole subtree — every descendant is removed too. The
+    /// survivors are renormalised so nothing can render at an impossible depth. Tick states of the
+    /// survivors are left as-is (structural edits never change completion).
     func delete(_ task: TaskItem) {
-        let id = task.id
-        let survivors = tasks.filter { $0.id != id }
-        applyStructural(TaskOutline.normalizedLevels(survivors), deleteIds: [id])
+        guard let index = tasks.firstIndex(where: { $0.id == task.id }) else { return }
+        let doomed = TaskOutline.subtreeRange(tasks, at: index)
+        let deleteIds = doomed.map { tasks[$0].id }
+        var survivors = tasks
+        survivors.removeSubrange(doomed)
+        // Removing the last unfinished child can let a parent's remaining children all be done, so
+        // recompute ancestors from their surviving children (same bottom-up rule as a toggle).
+        let chain = Array(TaskOutline.ancestorChain(tasks, of: index).reversed())
+        let recomputed = TaskOutline.recomputingAncestors(survivors, ancestors: chain, now: Date())
+        let completionUpdates = completionChanges(from: survivors, to: recomputed)
+        applyStructural(TaskOutline.normalizedLevels(recomputed), deleteIds: deleteIds)
+        if !completionUpdates.isEmpty {
+            Task { [db] in try? await db.updateTaskCompletion(completionUpdates) }
+        }
     }
 
     /// Removes every completed task in one batch and renumbers/renormalises the survivors. A survivor

@@ -74,14 +74,49 @@ enum TaskOutline {
         // Top-down: the task plus every descendant.
         for j in subtreeRange(out, at: index) { setDone(&out[j], target, now: now) }
 
-        // Bottom-up: walk parent → root, deriving each ancestor's state from its children.
-        var child = index
-        while let parent = parentIndex(out, of: child) {
-            let allChildrenDone = directChildren(out, of: parent).allSatisfy { out[$0].isDone }
-            setDone(&out[parent], allChildrenDone, now: now)
-            child = parent
+        return derivingAncestorCompletion(out, now: now)
+    }
+
+    /// Bottom-up pass: every task that has at least one direct child is marked done iff all of its
+    /// direct children are done (and not-done otherwise), walking from the deepest rows up so a
+    /// child's freshly derived state feeds its own parent. A parent's state only changes when it
+    /// disagrees with its children, so a childless task is never touched.
+    static func derivingAncestorCompletion(_ tasks: [TaskItem], now: Date) -> [TaskItem] {
+        var out = tasks
+        var j = out.count - 1
+        while j >= 0 {
+            if let parent = parentIndex(out, of: j) {
+                let allChildrenDone = directChildren(out, of: parent).allSatisfy { out[$0].isDone }
+                setDone(&out[parent], allChildrenDone, now: now)
+            }
+            j -= 1
         }
         return out
+    }
+
+    /// Recomputes the done state of the given ancestor rows — indices into `tasks`, deepest first —
+    /// from their direct children: a row is done iff all of its direct children are done. Used after
+    /// a child was removed, where the chain above the removal is the only thing that can change.
+    static func recomputingAncestors(_ tasks: [TaskItem], ancestors: [Int], now: Date) -> [TaskItem] {
+        var out = tasks
+        for a in ancestors where out.indices.contains(a) {
+            let allChildrenDone = directChildren(out, of: a).allSatisfy { out[$0].isDone }
+            setDone(&out[a], allChildrenDone, now: now)
+        }
+        return out
+    }
+
+    /// The chain of ancestor indices of the row at `index` — its parent, then the grandparent, up to
+    /// the root — nearest first. The implicit parent of a row is the nearest preceding row with a
+    /// smaller indent level.
+    static func ancestorChain(_ tasks: [TaskItem], of index: Int) -> [Int] {
+        var chain: [Int] = []
+        var child = index
+        while let parent = parentIndex(tasks, of: child) {
+            chain.append(parent)
+            child = parent
+        }
+        return chain
     }
 
     /// Sets a task's done state only when it actually changes, stamping/clearing `completedAt`.

@@ -71,6 +71,7 @@ struct NotePanelBehaviorTests {
 struct NotePanelOrderingTests {
     private func makePanel(pinned: Bool) -> NotePanel {
         _ = NSApplication.shared
+        _ = Spy(pinned: false)   // see `Spy.loadPanelClass`: installs NotePanel's overrides up front
         let note = Note(color: .yellow, floatOnTop: pinned, showOnAllSpaces: true)
         let panel = NotePanel(note: note, content: AnyView(Color.clear))
         panel.apply(floatOnTop: pinned, showOnAllSpaces: true)
@@ -79,12 +80,26 @@ struct NotePanelOrderingTests {
 
     /// Records which ordering primitive a panel ends up using.
     final class Spy: NotePanel {
+        // `NotePanel` overrides `orderFront`/`orderFrontRegardless` in Swift, and Swift installs a
+        // class's overrides into the Objective-C method table when the class is *first constructed*.
+        // Calls made from within that first construction (e.g. `apply` in `init`) still dispatch to
+        // `NSWindow`; every later instance — and every later call on the first one — uses the
+        // override. Tests that measure calls therefore build a throwaway `Spy` first.
+
         var calls: [String] = []
+        /// Records the ordinary-window path (the note's decision) and then runs it, so the test also
+        /// sees the level it leaves the panel at.
+        var showedAsOrdinary = false
+        override func showAsOrdinaryWindow() {
+            showedAsOrdinary = true
+            calls.append("orderFrontRegardless")
+            super.showAsOrdinaryWindow()
+        }
         override func orderFront(_ sender: Any?) {
             calls.append("orderFront")
             super.orderFront(sender)   // → NotePanel's dispatch, which may route elsewhere
         }
-        override func showAsOrdinaryWindow() { calls.append("orderFrontRegardless") }
+        override func orderFrontRegardless() { calls.append("orderFrontRegardless") }
         override func raiseRegardless() { calls.append("raiseRegardless") }
         init(pinned: Bool) {
             super.init(note: Note(color: .yellow, floatOnTop: pinned), content: AnyView(Color.clear))
@@ -92,30 +107,76 @@ struct NotePanelOrderingTests {
         }
     }
 
-    @Test("an unpinned note never uses the unordered orderFront (which shows over other apps)")
-    func unpinnedOrdersAsOrdinaryWindow() {
+    @Test("showing an unpinned note puts it at the floating level for a moment, so it is really on screen")
+    func unpinnedShowsAtTemporaryFloat() {
+        _ = Spy(pinned: false)   // installs NotePanel's overrides before the measured instance
         let spy = Spy(pinned: false)
         spy.orderFront(nil)
-        #expect(spy.calls == ["orderFront", "orderFrontRegardless"])   // never a plain super.orderFront
+        #expect(spy.calls == ["orderFront", "orderFrontRegardless"])   // an ordinary window, not a raise
+        // A `.nonactivatingPanel` at level 0 is never re-ordered onto the screen while another app is
+        // frontmost, so the show would be a no-op — and the full-screen policy (which reads "ordered
+        // out") could then not take it off a full-screen Space.
+        #expect(spy.level == .floating)
     }
 
-    @Test("a pinned note is ordered normally, so it floats in front")
-    func pinnedOrdersNormally() {
+    @Test("an unpinned note drops back to the normal level after being shown", .serialized)
+    func unpinnedDropsBackToNormal() async throws {
+        let spy = Spy(pinned: false)
+        spy.orderFront(nil)
+        try await Task.sleep(for: .seconds(3))
+        #expect(spy.level == .normal)
+    }
+
+    @Test("a pinned note stays floating")
+    func pinnedStaysFloating() async throws {
         let spy = Spy(pinned: true)
         spy.orderFront(nil)
         #expect(spy.calls == ["orderFront"])
+        try await Task.sleep(for: .seconds(3))
+        #expect(spy.level == .floating)
+    }
+
+    @Test("taking an unpinned note off screen drops the show-time float too, so it really goes away")
+    func suppressionDropsTheFloat() {
+        let spy = Spy(pinned: false)
+        spy.orderFront(nil)
+        #expect(spy.level == .floating)
+        spy.applyFullScreenSuppression(true)
+        #expect(spy.level == .normal)
+        #expect(!spy.isVisible)
+    }
+
+    @Test("unpinning while the full-screen hold is already on takes the note off screen at once")
+    func unpinningWhileSuppressedHidesImmediately() {
+        _ = Spy(pinned: false)   // installs NotePanel's overrides before the measured instance
+        let spy = Spy(pinned: true)
+        spy.applyFullScreenSuppression(true)   // pinned: the hold is noted, the note may stay
+        #expect(spy.orderedOutWhileSuppressed)
+        spy.orderedOutWhileSuppressed = false   // forget the first take-off; only the re-run matters
+        print("DBG visible=\(spy.isVisible) mini=\(spy.isMiniaturized) lvl=\(spy.level.rawValue) pin=\(spy.isPinned) sup=\(spy.suppressedByFullScreen)")
+        // The user clicks "unpin": the pin's own `orderOut` at the floating level was refused, so
+        // re-running the policy has to try again instead of returning early on the unchanged hold.
+        spy.apply(floatOnTop: false, showOnAllSpaces: true)
+        spy.applyFullScreenSuppression(true)
+        #expect(spy.orderedOutWhileSuppressed)   // the unchanged hold was re-applied, not skipped
+        #expect(spy.level == .normal)
     }
 
     @Test("a background restore of an unpinned note does not raise it")
     func backgroundRestoreDoesNotRaise() {
+        _ = Spy(pinned: false)   // installs NotePanel's overrides before the measured instance
         let spy = Spy(pinned: false)
+        spy.calls = []
         spy.showInBackground(raise: false)
         #expect(spy.calls == ["orderFrontRegardless"])   // shown, not raised
+        #expect(spy.showedAsOrdinary)
     }
 
     @Test("an explicit 'show me this' raises even an unpinned note")
     func explicitShowRaises() {
+        _ = Spy(pinned: false)   // installs NotePanel's overrides before the measured instance
         let spy = Spy(pinned: false)
+        spy.calls = []
         spy.showInBackground(raise: true)
         spy.raiseRegardless()
         #expect(spy.calls == ["raiseRegardless", "raiseRegardless"])

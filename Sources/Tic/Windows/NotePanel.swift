@@ -64,7 +64,14 @@ class NotePanel: NSPanel {
     /// Applies the float-on-top and show-on-all-Spaces behaviours to the live window.
     func apply(floatOnTop: Bool, showOnAllSpaces: Bool) {
         isPinned = floatOnTop
-        level = floatOnTop ? .floating : .normal
+        // Pinning lifts the note to floating for good; unpinning leaves it at its resting level (a
+        // show in flight is what put it higher, and it drops back on its own).
+        if floatOnTop {
+            showFloatGeneration += 1
+            level = .floating
+        } else {
+            level = .normal
+        }
         // Being pinned is what lets a note ride into another app's full-screen Space. An unpinned
         // note is an ordinary window: it stays on its own Space (free to be covered by other windows)
         // and is left behind when an app goes full screen. `fullScreenAuxiliary` has to be *assigned*,
@@ -89,18 +96,70 @@ class NotePanel: NSPanel {
     /// full-screen app's Space covers the desktop, so an ordinary window shown "behind" it would
     /// still be visible.
     private(set) var suppressedByFullScreen: Bool = false
+    /// Where this note was (queue position) while it was taken off screen — restored on re-show so
+    /// an unpinned note doesn't jump above pinned ones.
+    private var orderingWhileHidden: NSWindow.OrderingMode = .below
 
     func applyFullScreenSuppression(_ suppressed: Bool) {
-        guard suppressed != suppressedByFullScreen else { return }
+        // Re-applying an unchanged hold must still take a note off screen. A note that was pinned
+        // and became unpinned *while* the hold was on never left the screen: its earlier `orderOut`
+        // (made at `.floating`, while pinned) was refused, and returning early here left it showing
+        // over the full-screen app until the user switched Spaces.
         suppressedByFullScreen = suppressed
         // Lifting the hold doesn't show the note (the manager decides when), but a note that was
-        // ordered out must not come back until then.
-        if suppressed { orderOut(nil) }
+        // ordered out must not come back until then. Dropping the show-time float here means the
+        // ordering below really takes it off the screen instead of leaving it above the full-screen
+        // app at a raised level.
+        if suppressed {
+            // AppKit can't be asked whether the window server really dropped the window (a
+            // non-activating panel reports `isVisible == false` even while it is on screen), so a
+            // re-applied hold always retries — `orderOut` on an off-screen window is harmless.
+            orderedOutWhileSuppressed = true
+            showFloatGeneration += 1
+            if !isPinned && !userSummoned { level = .normal }
+            orderOut(nil)
+        } else if !isPinned && !userSummoned {
+            orderingWhileHidden = .below
+        }
     }
+
+    /// Set when the full-screen hold actually asked for the note to come off screen. Observable
+    /// because a re-applied hold is otherwise a no-op the tests can't see: the manager re-runs the
+    /// policy every second, and the pin toggle adds one more run of its own.
+    var orderedOutWhileSuppressed = false
 
     /// Every way of putting the panel on screen funnels through here, so the full-screen rule can't
     /// be bypassed by one stray `orderFront`.
-    private var mayShow: Bool { isPinned || !suppressedByFullScreen }
+    private var mayShow: Bool { isPinned || userSummoned || !suppressedByFullScreen }
+
+    /// While an unpinned note is *shown* it sits at the floating level, so the window server actually
+    /// has it on screen. A `.nonactivatingPanel` at level 0 is never re-ordered onto the screen while
+    /// another app is frontmost (which is always how a note is shown — Tic is the background app),
+    /// so the ordering call would leave it in the window server's off-screen list. The full-screen
+    /// policy reads ordering by *out*, so a note that was never ordered in could never be ordered out
+    /// either: it stayed on the full-screen app's Space. (In practice only the apps that hold focus
+    /// differently — VS Code's quick-open palettes — surfaced it.)
+    ///
+    /// The extra level is not "pinned": the note still only takes the keyboard on a click
+    /// (`isFloatingPanel` stays false, so a click still activates Tic), and the pin's own louder
+    /// ordering (`orderFrontRegardless`) is still gated on `isPinned`.
+    ///
+    /// It is dropped again (back to `.normal`) once the note has been on screen for a moment, so an
+    /// unpinned note doesn't hover above other apps' windows for good.
+    private func showAtTemporaryFloat(_ order: () -> Void) {
+        level = .floating
+        order()
+        showFloatGeneration += 1
+        let generation = showFloatGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.showFloatDuration) { [weak self] in
+            guard let self, generation == self.showFloatGeneration, !self.isPinned else { return }
+            self.level = .normal
+        }
+    }
+
+    /// Cancels the pending drop back to `.normal` (another show happened first).
+    private var showFloatGeneration = 0
+    private static let showFloatDuration: TimeInterval = 2.5
 
     // MARK: - Ordering
 
@@ -128,12 +187,115 @@ class NotePanel: NSPanel {
     /// this app shows any of its windows — on its own Space, at level 0, free to be covered.
     func showAsOrdinaryWindow() {
         guard mayShow else { return }
+        // The manager decided it belongs on screen; a summoned note is shown above everything until
+        // the user goes back to the full-screen app.
+        if userSummoned {
+            level = Self.userCanvasLevel
+            super.orderFrontRegardless()
+            return
+        }
         // `orderFront` — deliberately *not* `orderFrontRegardless`. "Regardless" (analysis of the
-        // non-activating panel's ordering) is what makes a note stay above other apps' windows and
-        // ride into a full-screen Space; plain `orderFront` shows it as this app's ordinary window,
-        // which other apps cover and which stays off another app's full-screen Space. It works even
-        // while Tic is inactive, which is the case for every restore.
-        super.orderFront(nil)
+        // non-activating panel's ordering) is what makes an unpinned note stay above other apps'
+        // windows and ride into a full-screen Space; plain `orderFront` shows it as this app's
+        // ordinary window, which other apps cover and which stays off another app's full-screen
+        // Space. It works even while Tic is inactive, which is the case for every restore.
+        if isPinned {
+            super.orderFront(nil)
+            joinFullScreenSpaceIfShowing()
+        } else {
+            showAtTemporaryFloat { super.orderFront(nil) }
+        }
+    }
+
+    // MARK: - Following another app into its full-screen Space
+
+    /// The note's display, as the window server sees it: the one it mostly lies on.
+    private var displayUUID: String? {
+        let area = frame.width * frame.height
+        guard area > 0 else { return nil }
+        return NSScreen.screens.first { screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                    as? CGDirectDisplayID else { return false }
+            let display = CGDisplayBounds(number)
+            let overlap = display.intersection(frame)
+            return !overlap.isNull && overlap.width * overlap.height >= area * 0.5
+        }.flatMap { screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                    as? CGDirectDisplayID,
+                  let uuid = CGDisplayCreateUUIDFromDisplayID(number)?.takeRetainedValue()
+            else { return nil }
+            return CFUUIDCreateString(nil, uuid) as String?
+        }
+    }
+
+    /// Puts a pinned note onto another app's full-screen Space once that Space is current on the
+    /// note's display.
+    ///
+    /// A note is shown on the *ordinary* desktop and only afterwards does an app go full screen on
+    /// its display. Plain `orderFront` then leaves the note behind on the desktop's Space, and
+    /// re-asserting it re-orders it onto the Space that is current — the full-screen one — which is
+    /// what a pinned note ("keep on top", show over the full-screen app) wants. Deferred a tick,
+    /// because the Space changes hands after the app's full-screen animation, not at the call.
+    func joinFullScreenSpace() { joinFullScreenSpaceIfShowing() }
+
+    private func joinFullScreenSpaceIfShowing() {
+        guard isVisible else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isPinned, self.isVisible else { return }
+            // Nothing to do when the window server already has it on the current Space.
+            guard !Self.isOnFullScreenSpace(displayUUID: displayUUID) else { return }
+            self.orderFront(nil)
+        }
+    }
+
+    /// Whether `uuid`'s display is currently showing a full-screen Space. Read straight from the
+    /// window server, so it can't drift from what the manager decided.
+    private static func isOnFullScreenSpace(displayUUID: String?) -> Bool {
+        guard let displayUUID,
+              let connect = SkyLight.connect, let copySpaces = SkyLight.copySpaces,
+              let displays = copySpaces(connect()) as? [[String: Any]]
+        else { return false }
+        return displays.contains { display in
+            guard (display["Display Identifier"] as? String) == displayUUID,
+                  let space = display["Current Space"] as? [String: Any]
+            else { return false }
+            return (space["type"] as? NSNumber)?.intValue == 4 && space["fs_wid"] != nil
+        }
+    }
+
+
+    /// The user summoned this note while another app is full screen (Tic's icon, or a list picked
+    /// from Recent / Overview / the palette). It then sits above the full-screen app at the
+    /// *user-canvas* level: visible and editable until the user goes back to that app, when the
+    /// manager clears this and hides it again.
+    var userSummoned = false
+
+    /// Back to the resting level after the manager lifts a summon — unless the pin says otherwise
+    /// (or the note happens to be mid-show; `showAtTemporaryFloat` handles that itself).
+    /// Which end of the window list a re-shown note joins. An unpinned note goes back *below* the
+    /// others, so showing it again can't lift it over a pinned note.
+    var restoreOrdering: NSWindow.OrderingMode { orderingWhileHidden }
+
+    func restToNormalLevelIfUnpinned() {
+        guard !isPinned else { return }
+        level = .normal
+    }
+
+    /// The level a summoned note shows at — formally the "screen-saver" level (ABOVE the app's
+    /// full-screen windows, which live just below it), named for here for what it means: a surface
+    /// the user reached for.
+    static let userCanvasLevel: NSWindow.Level = .screenSaver
+
+    /// Shows the note as the user's canvas: above whatever is on its display, editable.
+    ///
+    /// Unlike a pin this is loud on purpose (`orderFrontRegardless` + the screen-saver level): the
+    /// note is being pushed into another app's full-screen Space, so it has to be ordered in over it,
+    /// not just onto its own Space. It is only ever used in response to an explicit user action, and
+    /// the manager takes it back (see `userSummoned`) as soon as the user returns to that app.
+    func showAsUserCanvas() {
+        level = Self.userCanvasLevel
+        orderFrontRegardless()
+        makeKey()
     }
 
     /// Whether the note is on the current Space but not on the screen — i.e. it is *on* this
@@ -150,7 +312,12 @@ class NotePanel: NSPanel {
     /// above whatever is frontmost; a pinned note floats anyway. Pass `raise: true` only for an
     /// explicit "show me this" from the user.
     func showInBackground(raise: Bool) {
-        if raise || isPinned { raiseRegardless() } else { showAsOrdinaryWindow() }
+        if raise || isPinned {
+            raiseRegardless()
+            if isPinned { joinFullScreenSpaceIfShowing() }
+        } else {
+            showAsOrdinaryWindow()
+        }
     }
 
     override func makeKeyAndOrderFront(_ sender: Any?) {
@@ -170,6 +337,23 @@ class NotePanel: NSPanel {
     func raiseRegardless() {
         guard mayShow else { return }
         orderFrontRegardless()
+    }
+
+    /// The private window-server query a pinned note needs (see `joinFullScreenSpaceIfShowing`).
+    private enum SkyLight {
+        typealias Connect = @convention(c) () -> Int32
+        typealias CopySpaces = @convention(c) (Int32) -> CFArray?
+
+        nonisolated(unsafe) static let coreGraphics = dlopen(nil, RTLD_LAZY)
+        nonisolated(unsafe) static let framework = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY)
+
+        static func load<T>(_ handle: UnsafeMutableRawPointer?, _ name: String, _ type: T.Type) -> T? {
+            guard let handle, let pointer = dlsym(handle, name) else { return nil }
+            return unsafeBitCast(pointer, to: T.self)
+        }
+
+        static let connect: Connect? = load(coreGraphics, "CGSMainConnectionID", Connect.self)
+        static let copySpaces: CopySpaces? = load(framework, "SLSCopyManagedDisplaySpaces", CopySpaces.self)
     }
 
     // MARK: - Resize grip

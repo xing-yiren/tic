@@ -101,6 +101,36 @@ final class AppModel {
         updates.start()
         // Reconcile reminders on launch (the system may have delivered or missed some while we quit).
         Task { await reminders?.reconcile() }
+        installTestHooksIfAsked()
+    }
+
+    /// Development-only: `TIC_TEST_HOOKS=1` lets a script drive "the user reached for Tic" — the
+    /// status item's menu can't be clicked reliably from automation — and log what the window
+    /// manager saw. Off in every normal launch.
+    private func installTestHooksIfAsked() {
+        guard ProcessInfo.processInfo.environment["TIC_TEST_HOOKS"] != nil else { return }
+        let center = DistributedNotificationCenter.default()
+        center.addObserver(forName: NSNotification.Name("dev.tic.reachForTic"), object: nil, queue: .main) { _ in
+            Task { @MainActor in
+                AppModel.shared.noteUserReachedForTic()
+                AppModel.shared.logTestHook("reachForTic")
+            }
+        }
+        center.addObserver(forName: NSNotification.Name("dev.tic.reachForList"), object: nil, queue: .main) { _ in
+            Task { @MainActor in
+                if let note = AppModel.shared.notes.first { AppModel.shared.open(note) }
+                AppModel.shared.logTestHook("reachForList")
+            }
+        }
+    }
+
+    /// Development-only (see `installTestHooksIfAsked`).
+    private func logTestHook(_ name: String) {
+        let manager = windows
+        let line = "[HOOK] \(name) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?") "
+            + "full=\(manager.otherAppIsFullScreen ? 1 : 0) summoned=\(manager.summonedWhileFullScreen.count) "
+            + manager.debugState()
+        NSLog("%@", line as NSString)
     }
 
     /// Re-run reminder reconciliation — after any task/reminder change, on wake, or on a timezone
@@ -301,8 +331,38 @@ final class AppModel {
 
     /// Open a note (or bring it to front if already open) and activate the app.
     func open(_ note: Note) {
+        noteUserReachedForTic()
+        // A list picked while another app is full screen joins that Space, above it, until the user
+        // goes back to the app (see `NoteWindowManager.summon`).
+        windows.summon(note)
         windows.openNote(note)
-        NSApp.activate()
+        // Same rule as `noteUserReachedForTic`: activating over another app's full-screen Space
+        // would switch away from it, taking the just-summoned note with it.
+        if Self.shouldActivateWhenReachingForTic(otherAppIsFullScreen: windows.otherAppIsFullScreen) {
+            NSApp.activate()
+        }
+    }
+
+    /// The user reached for Tic from its icon (menu/dock): whatever is already on screen stays
+    /// visible — and editable — over a full-screen app until the user goes back to that app.
+    func noteUserReachedForTic() {
+        // Activating Tic while another app is full screen takes the user out of that app's Space —
+        // macOS switches to the Space Tic's ordinary windows live on, and the full-screen app (and
+        // the notes we were about to show over it) disappear with it. Reaching for Tic's icon must
+        // not do that: the notes are put above the full-screen app instead, and the user stays put.
+        if Self.shouldActivateWhenReachingForTic(otherAppIsFullScreen: windows.otherAppIsFullScreen) {
+            NSApp.activate()
+        }
+        windows.noteUserShow()
+    }
+
+    /// Whether reaching for Tic (its menu icon, a list in its menu) may activate the app.
+    ///
+    /// Not while another app is full screen: activation switches macOS to the Space Tic's ordinary
+    /// windows live on, which takes the user out of the full-screen app — and the notes meant to be
+    /// shown over it go with it. The notes are summoned above the full-screen app instead.
+    nonisolated static func shouldActivateWhenReachingForTic(otherAppIsFullScreen: Bool) -> Bool {
+        !otherAppIsFullScreen
     }
 
     /// Bring all open notes to the front.

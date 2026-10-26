@@ -96,43 +96,13 @@ struct OverviewView: View {
     }
 
     private func row(_ note: Note) -> some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(note.color.fill)
-                .frame(width: 14, height: 14)
-                .overlay(Circle().strokeBorder(.black.opacity(0.15)))
-
-            Text(title(note))
-                .lineLimit(1)
-
-            Spacer(minLength: 8)
-
-            Button {
-                model.open(note)
-            } label: {
-                Image(systemName: "arrow.up.forward.app")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Bring this list to the front")
-
-            // The "should this note appear on the desktop" switch. It writes the note's own
-            // `isOpen` flag through the same open/close path the menu bar and the header X use, so
-            // launch restores exactly the notes left switched on here.
-            Toggle("", isOn: Binding(
-                get: { note.isOpen },
-                set: { model.setOnDesktop(note, visible: $0) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .help(note.isOpen ? "Showing on the desktop" : "Hidden from the desktop")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+        OverviewRow(
+            note: note,
+            title: title(note),
+            onOpen: { model.open(note) },
+            onSetOnDesktop: { model.setOnDesktop(note, visible: $0) },
+            onDelete: { model.delete(note) }
+        )
     }
 
     // MARK: - Footer
@@ -200,5 +170,77 @@ struct OverviewView: View {
 
     private func title(_ note: Note) -> String {
         note.title.isEmpty ? "Untitled List" : note.title
+    }
+}
+
+/// One list in the Overview: colour dot, title, delete, "bring to front", and the show-on-desktop
+/// switch. A view of its own so it can hold the hover state and the delete confirmation.
+private struct OverviewRow: View {
+    let note: Note
+    let title: String
+    let onOpen: () -> Void
+    let onSetOnDesktop: (Bool) -> Void
+    let onDelete: () -> Void
+
+    @State private var hover = false
+    @State private var confirming = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(note.color.fill)
+                .frame(width: 14, height: 14)
+                .overlay(Circle().strokeBorder(.black.opacity(0.15)))
+
+            Text(title)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            // Laid out always, revealed on hover — inserting it on hover would move the row's
+            // content and pull the button out from under the pointer (the palette had just that).
+            Button { confirming = true } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Delete list")
+            .opacity(hover ? 1 : 0)
+            .allowsHitTesting(hover)
+            .accessibilityHidden(!hover)
+
+            Button(action: onOpen) {
+                Image(systemName: "arrow.up.forward.app")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Bring this list to the front")
+
+            // The "should this note appear on the desktop" switch. It writes the note's own
+            // `isOpen` flag through the same open/close path the menu bar and the header X use, so
+            // launch restores exactly the notes left switched on here.
+            Toggle("", isOn: Binding(
+                get: { note.isOpen },
+                set: { onSetOnDesktop($0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help(note.isOpen ? "Showing on the desktop" : "Hidden from the desktop")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .confirmationDialog("Delete “\(title)”?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("Delete List", role: .destructive, action: onDelete)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes the list and its tasks.")
+        }
     }
 }

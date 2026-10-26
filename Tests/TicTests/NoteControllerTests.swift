@@ -139,6 +139,85 @@ struct NoteControllerTests {
         #expect(c.tasks.map(\.text) == ["Heading", "One", "Two"])
         #expect(c.tasks.map(\.indentLevel) == [0, 1, 1])
     }
+
+    // MARK: - Deleting a subtree
+
+    @Test("deleting a task deletes its whole subtree, leaving unrelated rows untouched")
+    func deleteCascadesToSubtasks() async throws {
+        let c = try await makeController()
+        c.addTask("Heading")                 // L0
+        c.addTask("Child", level: 1)         // L1
+        c.addTask("Grandchild", level: 2)    // L2
+        c.addTask("Sibling", level: 0)       // L0
+        let heading = try #require(c.tasks.first { $0.text == "Heading" })
+
+        c.delete(heading)
+
+        #expect(c.tasks.map(\.text) == ["Sibling"])
+        #expect(c.tasks.map(\.indentLevel) == [0])
+    }
+
+    @Test("deleting the last undone subtask completes the parent (bottom-up)")
+    func deleteCompletesParentWhenChildrenDone() async throws {
+        let c = try await makeController()
+        c.addTask("Heading")
+        c.addTask("Open", level: 1)
+        c.addTask("Closed", level: 1)
+        let closed = try #require(c.tasks.first { $0.text == "Closed" })
+        c.toggle(closed)                     // Closed done, Open not → Heading stays open
+        #expect(c.tasks.first?.isDone == false)
+
+        c.delete(try #require(c.tasks.first { $0.text == "Open" }))
+
+        #expect(c.tasks.map(\.text) == ["Heading", "Closed"])
+        #expect(c.tasks.first?.isDone == true)
+    }
+
+    // MARK: - Adding under a completed task
+
+    @Test("adding a subtask under a completed task reopens it")
+    func addSubtaskReopensCompletedParent() async throws {
+        let c = try await makeController()
+        c.addTask("Heading")
+        c.addTask("Child", level: 1)
+        let heading = try #require(c.tasks.first)
+        c.toggle(heading)                    // both done
+        #expect(c.tasks.filter(\.isDone).count == c.tasks.count)
+
+        let headingRow = try #require(c.tasks.first)
+        let id = try #require(c.addSubtask(under: headingRow))
+        c.commitText(try #require(c.tasks.first { $0.id == id }), "New")
+
+        #expect(c.tasks.first { $0.text == "Heading" }?.isDone == false)
+        #expect(c.tasks.first { $0.text == "New" }?.isDone == false)
+        #expect(c.tasks.first { $0.text == "Child" }?.isDone == true)   // existing tick kept
+    }
+
+    @Test("quick-adding an indented task under a completed task reopens it")
+    func addTaskIndentedReopensCompletedParent() async throws {
+        let c = try await makeController()
+        c.addTask("Heading")
+        c.addTask("Child", level: 1)
+        c.toggle(try #require(c.tasks.first))
+        #expect(c.tasks.first?.isDone == true)
+
+        c.addTask("Quick", level: 1)
+
+        #expect(c.tasks.first { $0.text == "Heading" }?.isDone == false)
+        #expect(c.tasks.first { $0.text == "Quick" }?.isDone == false)
+    }
+
+    @Test("adding a top-level task reopens none of the completed rows above it")
+    func addTaskLeavesCompletedRowsAlone() async throws {
+        let c = try await makeController()
+        c.addTask("Heading")
+        c.addTask("Child", level: 1)
+        c.toggle(try #require(c.tasks.first))
+
+        c.addTask("After")
+
+        #expect(c.tasks.first { $0.text == "Heading" }?.isDone == true)
+    }
 }
 
 /// The completed-display options (hide / move-to-bottom / clear), driven through the controller's

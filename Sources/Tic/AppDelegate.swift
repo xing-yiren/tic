@@ -7,11 +7,14 @@ import UserNotifications
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var newNoteKeyMonitor: Any?
+    /// The status-bar item + menu (AppKit; see `MenuBarController`). Held for the app's lifetime.
+    private var menuBar: MenuBarController?
     private let notificationRouter = NotificationRouterDelegate()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         Task { await AppModel.shared.bootstrap() }
+        menuBar = MenuBarController()
         installNewNoteShortcut()
         installReminderObservers()
         // Update banners + task reminders share one router delegate. `current()` throws without a

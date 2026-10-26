@@ -1,45 +1,41 @@
 import SwiftUI
 import AppKit
 
+/// The app's SwiftUI scenes. There is no window here: every visible surface (notes, Overview, the
+/// Lists palette, Preferences) is an AppKit window owned by `AppModel`. The menu-bar item is also
+/// AppKit (`MenuBarController`, installed by `AppDelegate`), because a `.menu`-style `MenuBarExtra`
+/// can't do submenus or context menus.
 struct TicApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        // Native .menu style (default): its content is rebuilt each time the menu opens, so it
-        // reliably reflects the current lists — unlike .window, which didn't re-render here.
-        MenuBarExtra {
-            MenuBarContent()
-        } label: {
-            MenuBarLabel()
-        }
+        Settings { EmptyView() }
     }
 }
 
 /// The status-bar icon: a template-rendered menu-bar glyph (bundled via SPM resources), falling
 /// back to an SF Symbol if the resource can't be found. A small dot marks an update the user
-/// hasn't looked at yet (`UpdateChecker.isUnseen`). The dot is drawn *into* the image: the status
-/// item renders only the label's image, so a SwiftUI overlay never shows.
-private struct MenuBarLabel: View {
-    private var updates: UpdateChecker { AppModel.shared.updates }
-
-    var body: some View {
-        if let icon = updates.isUnseen ? Self.badgedIcon : Self.icon {
-            Image(nsImage: icon).renderingMode(.template)
-        } else {
-            Image(systemName: updates.isUnseen ? "checklist.checked" : "checklist")
-        }
+/// hasn't looked at yet. The dot is drawn *into* the image: the status item renders only the
+/// label's image, so a SwiftUI overlay never shows. Shared with `MenuBarController`, which draws
+/// the same glyph into its `NSStatusItem`.
+enum MenuBarLabel {
+    /// The icon for the current update state (`badged` = an unseen update).
+    static func image(badged: Bool) -> NSImage? {
+        let rendered = badged ? badgedIcon : icon
+        return rendered ?? NSImage(systemSymbolName: badged ? "checklist.checked" : "checklist",
+                                   accessibilityDescription: "Tic")
     }
 
-    private static let glyph: NSImage? = {
+    static let glyph: NSImage? = {
         guard let url = menuBarIconURL() else { return nil }
         return NSImage(contentsOf: url)
     }()
-    private static let icon = glyph.map { compose($0, dot: false) }
-    private static let badgedIcon = glyph.map { compose($0, dot: true) }
+    static let icon = glyph.map { compose($0, dot: false) }
+    static let badgedIcon = glyph.map { compose($0, dot: true) }
 
     /// 20×18 template image: the 18pt glyph plus (optionally) a 6pt dot at the top-right, with a
     /// knocked-out ring so it reads as a badge. Both variants share a size so nothing shifts.
-    private static func compose(_ glyph: NSImage, dot: Bool) -> NSImage {
+    static func compose(_ glyph: NSImage, dot: Bool) -> NSImage {
         let image = NSImage(size: NSSize(width: 20, height: 18), flipped: false) { _ in
             glyph.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18))
             if dot {
@@ -55,7 +51,7 @@ private struct MenuBarLabel: View {
         return image
     }
 
-    private static func menuBarIconURL() -> URL? {
+    static func menuBarIconURL() -> URL? {
         let fileManager = FileManager.default
         let fileName = "MenuBarIcon.png"
         let resourceBundleName = "Tic_Tic.bundle"
@@ -76,134 +72,5 @@ private struct MenuBarLabel: View {
         }
 
         return candidates.first { fileManager.fileExists(atPath: $0.path) }
-    }
-}
-
-/// The Tic menu bar menu: New List, recent lists (with a "More Lists" submenu for up to 100),
-/// a Search window, and Quit.
-private struct MenuBarContent: View {
-    private var model: AppModel { AppModel.shared }
-    private static let recentCount = 5
-    private static let moreCount = 95   // 5 + 95 = up to 100 reachable from the menu
-
-    var body: some View {
-        Button("New List") { model.newNote() }
-            .keyboardShortcut("n")   // hint + works while the menu is open; AppDelegate covers the rest
-
-        Button("Overview…") { model.openOverview() }
-            .keyboardShortcut("o")   // hint; AppDelegate dispatches ⌘O globally
-
-        Divider()
-
-        let recent = model.notes.sorted { $0.updatedAt > $1.updatedAt }
-        if recent.isEmpty {
-            Text("No lists yet")
-        } else {
-            Section("Recent Lists") {
-                ForEach(Array(recent.prefix(Self.recentCount))) { note in
-                    Button(label(note)) { model.open(note) }
-                }
-            }
-            let more = Array(recent.dropFirst(Self.recentCount).prefix(Self.moreCount))
-            if !more.isEmpty {
-                Menu("More Lists") {
-                    ForEach(more) { note in
-                        Button(label(note)) { model.open(note) }
-                    }
-                }
-            }
-        }
-
-        Divider()
-
-        categoryMenu
-
-        Button("Manage Categories…") { model.openCategories() }
-
-        Toggle("Hide All Notes", isOn: Binding(
-            get: { model.hideAllActive },
-            set: { model.setHideAll($0) }
-        ))
-
-        Divider()
-
-        Button("Search Lists…") { model.openSearch() }
-
-        Button("AI Agents (MCP)…") { model.openMCPSetup() }
-
-        Button("Preferences…") { model.openSettings() }
-            .keyboardShortcut(",", modifiers: .command)
-
-        Toggle("Launch at Login", isOn: Binding(
-            get: { model.launchAtLogin },
-            set: { model.setLaunchAtLogin($0) }
-        ))
-
-        if let title = model.updates.menuTitle {
-            Divider()
-            Button(title) { model.updates.openReleasePage() }
-        }
-
-        Divider()
-
-        Button("Quit Tic") { NSApplication.shared.terminate(nil) }
-            .keyboardShortcut("q")
-    }
-
-    private func label(_ note: Note) -> String {
-        note.title.isEmpty ? "Untitled List" : note.title
-    }
-
-    /// Multi-select category filter + "All Categories". Uncategorised is a first-class entry.
-    @ViewBuilder
-    private var categoryMenu: some View {
-        let filter = model.categoryFilter
-        Menu("Show Categories") {
-            Button {
-                model.showAllCategories()
-            } label: {
-                checkmarkLabel("All Categories", checked: filter.mode == .all)
-            }
-
-            Divider()
-
-            ForEach(model.categories) { category in
-                Button {
-                    model.toggleCategoryVisibility(category.id)
-                } label: {
-                    checkmarkLabel(category.name, checked: isVisible(category.id))
-                }
-            }
-
-            Button {
-                model.toggleUncategorizedVisibility()
-            } label: {
-                checkmarkLabel("Uncategorised", checked: isUncategorizedVisible)
-            }
-
-            if model.categories.isEmpty {
-                Text("No categories yet")
-            }
-
-            Divider()
-
-            Button("Manage Categories…") { model.openCategories() }
-        }
-    }
-
-    private func isVisible(_ id: UUID) -> Bool {
-        model.categoryFilter.mode == .all || model.categoryFilter.categoryIDs.contains(id)
-    }
-
-    private var isUncategorizedVisible: Bool {
-        let f = model.categoryFilter
-        return f.mode == .all || f.includesUncategorized
-    }
-
-    private func checkmarkLabel(_ title: String, checked: Bool) -> some View {
-        HStack {
-            Text(title)
-            if checked { Image(systemName: "checkmark") }
-        }
     }
 }

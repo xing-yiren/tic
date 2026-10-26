@@ -180,13 +180,18 @@ private struct ListRow: View {
 
             Spacer(minLength: 8)
 
-            if hover || selected {
-                Button { confirming = true } label: {
-                    Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Delete list")
+            // Always laid out, revealed on hover/selection — *not* inserted on hover. Adding the
+            // button on hover moved the row's content, so the pointer that had just entered the
+            // row could end up over the icon's new position, which counts as leaving the row: the
+            // button was removed and the trash flickered in and out of reach.
+            Button { confirming = true } label: {
+                Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(.secondary)
             }
+            .buttonStyle(.plain)
+            .help("Delete list")
+            .opacity(hover || selected ? 1 : 0)
+            .allowsHitTesting(hover || selected)
+            .accessibilityHidden(!(hover || selected))
 
             Text("List").font(.caption).foregroundStyle(.tertiary)
         }

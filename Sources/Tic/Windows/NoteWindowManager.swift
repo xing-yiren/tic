@@ -86,6 +86,96 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// Whether `id`'s note is off screen because another app is full screen.
     func isHiddenForFullScreen(_ id: UUID) -> Bool { hiddenForFullScreen.contains(id) }
 
+    /// Notes the user deliberately summoned while another app was full screen (Tic's icon, or a list
+    /// picked from the menu / Overview / the Lists palette). They stay visible — and editable — in
+    /// that full-screen Space, above the full-screen app's content, instead of being taken off screen
+    /// again by the policy a moment later. The user's next move is what ends it: clicking back into
+    /// the full-screen app, or switching away from Tic (an app activating, or a Space change on the
+    /// note's display). See `NotePanel.userSummoned`.
+    private(set) var summonedWhileFullScreen: Set<UUID> = []
+
+    /// Whether Tic itself is what the user is looking at — its menu was just opened, or a note (not
+    /// the full-screen app) is being edited.
+    var userIsInTic: Bool {
+        NSApp.isActive || panels.values.contains { $0.isKeyWindow }
+    }
+
+    /// Lets go of every summoned note. Called as soon as the user goes back to the full-screen app.
+    func releaseSummonedNotes() {
+        removeLeaveMonitor()
+        guard !summonedWhileFullScreen.isEmpty else { return }
+        let released = summonedWhileFullScreen
+        summonedWhileFullScreen.removeAll()
+        for id in released {
+            panels[id]?.userSummoned = false
+        }
+        for id in released { panels[id]?.restToNormalLevelIfUnpinned() }
+        // Back into the hands of the policy: anything on a full-screen display goes off screen now,
+        // so it comes back by itself when the user returns to the desktop.
+        applyFullScreenPolicy()
+    }
+
+    /// Called by every surface the user uses to bring Tic forward (menu bar, Overview, palette).
+    /// Notes on a full-screen display are shown over it from here on — the user asked for exactly
+    /// what is on screen.
+    func noteUserShow() {
+        guard otherAppIsFullScreen else { return }
+        markSummoned(onFullScreenDisplaysOnly: true)
+        installLeaveMonitorIfNeeded()
+    }
+
+    /// While notes are summoned, watches for the user moving to the full-screen app without leaving
+    /// Tic: their keystrokes then go to that app even though a note still holds focus, so the notes
+    /// step aside as soon as keys are pressed outside them (see `releaseSummonedNotes`).
+    private var leaveMonitor: Any?
+
+    private func installLeaveMonitorIfNeeded() {
+        guard leaveMonitor == nil else { return }
+        leaveMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, !self.summonedWhileFullScreen.isEmpty else { return event }
+            let keyIsInANote = event.window.map { window in
+                self.panels.values.contains { $0 === window }
+            } ?? false
+            if !keyIsInANote { self.releaseSummonedNotes() }
+            return event
+        }
+    }
+
+    private func removeLeaveMonitor() {
+        if let leaveMonitor { NSEvent.removeMonitor(leaveMonitor) }
+        leaveMonitor = nil
+    }
+
+    /// Flags the unpinned notes on full-screen displays as summoned: the user asked to see what is
+    /// on Tic right now, so those notes ride above the full-screen app until the user goes back to it.
+    private func markSummoned(onFullScreenDisplaysOnly onlyOnFullScreen: Bool) {
+        for (id, panel) in panels
+        where !panel.isPinned && !hiddenByFilter.contains(id)
+            && (!onlyOnFullScreen || isOnFullScreenDisplay(panel)) {
+            summon(panel)
+        }
+    }
+
+    /// One panel, onto the full-screen Space it sits on: gate open, above the app, editable.
+    private func summon(_ panel: NotePanel) {
+        panel.userSummoned = true
+        summonedWhileFullScreen.insert(panel.noteID)
+        hiddenForFullScreen.remove(panel.noteID)
+        panel.applyFullScreenSuppression(false)
+        panel.showAsUserCanvas()
+    }
+
+    /// The user picked one particular list (Recent, Overview, palette, Dock). If it sits on a
+    /// full-screen display, it joins that Space above the full-screen app — visible and editable —
+    /// rather than being held off screen by the policy.
+    func summon(_ note: Note) {
+        guard let panel = panels[note.id] else { return }
+        if isOnFullScreenDisplay(panel) && !panel.isPinned {
+            summon(panel)
+        }
+        markSummoned(onFullScreenDisplaysOnly: true)
+    }
+
     /// Injection point for tests: replaces the live query, so the policy can be exercised without a
     /// real full-screen Space. `nil` = ask the system. Returns the full-screen displays (empty =
     /// none).
@@ -93,6 +183,21 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
 
     /// Injection point for tests: the displays this manager considers, in place of `NSScreen.screens`.
     internal var screenProbe: (() -> [CGRect])?
+
+    /// Injection point for tests: a note's frame, in place of the live window's. A window server
+    /// constrains a window to the displays actually attached (a test machine with one screen would
+    /// clamp a note "on the second display" into the first), so the policy is exercised on the
+    /// frames a test says the notes have.
+    internal var panelFrameProbe: ((NotePanel) -> CGRect)?
+
+    /// A note's frame as the policy sees it.
+    func frame(of panel: NotePanel) -> CGRect {
+        panelFrameProbe?(panel) ?? panel.frame
+    }
+
+    /// Injection point for tests: what each display's current Space is, without a real window server
+    /// (`nil` = ask it).
+    internal var spaceProbe: (() -> ScreenSpaces)?
 
     /// Re-evaluates the full-screen policy once a second (see `observeOtherAppsFullScreen`).
     private var fullScreenPoll: Timer?
@@ -103,8 +208,20 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     private func observeOtherAppsFullScreen() {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                       as? NSRunningApplication)?.processIdentifier
+            Task { @MainActor in
+                self?.releaseSummonedNotesIfUserLeftTic(activatedPID: pid)
+                self?.applyFullScreenPolicy()
+            }
+        }
+        // Drag on a desktop Space, or swipe to another one: the user has moved on from the notes
+        // they summoned, even though no app activated.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.applyFullScreenPolicy() }
+            Task { @MainActor in self?.releaseSummonedNotes() }
         }
         for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -162,13 +279,82 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// Idempotent, and safe to call at any moment: a panel put on screen *while* another app is full
     /// screen (opened by the user, by an agent, or restored) is taken off again here, not just at the
     /// moment the full-screen Space appears.
+    /// Set `TIC_FS_DEBUG=1` to log what the full-screen policy sees and does on every sweep.
+    static let fullScreenDebug = ProcessInfo.processInfo.environment["TIC_FS_DEBUG"] != nil
+
+    /// One line per note: what the full-screen policy currently sees (for `TIC_FS_DEBUG` and the
+    /// development test hooks).
+    func debugState() -> String {
+        let screenSpaces = currentScreenSpaces()
+        return panels.values.map { panel -> String in
+            let id = panel.noteID.uuidString.prefix(4)
+            let display = display(of: panel).map { d in
+                "desktop=\(screenSpaces?.showsDesktopSpace(d) == true ? 1 : 0)"
+            } ?? "-"
+            let f = frame(of: panel)
+            return "\(id) [\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))] "
+                + "pin=\(panel.isPinned ? 1 : 0) sup=\(panel.suppressedByFullScreen ? 1 : 0) "
+                + "sum=\(panel.userSummoned ? 1 : 0) vis=\(panel.isVisible ? 1 : 0) "
+                + "ord=\(panel.wasOrderedOut ? 1 : 0) onfs=\(isOnFullScreenDisplay(panel) ? 1 : 0) "
+                + "lvl=\(panel.level.rawValue) \(display)"
+        }.joined(separator: " | ")
+    }
+
     func applyFullScreenPolicy() {
         setFullScreenDisplays(currentFullScreenDisplays())
         enforceFullScreenPolicy()
+        if Self.fullScreenDebug {
+            let state = debugState()
+            NSLog("[FS] screens=\(displays().map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }) full=\(fullScreenDisplays.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }) %@",
+                  state as NSString)
+        }
         // The same once-a-second sweep notices a panel the system dropped (sleep, lock, a Space
         // switch): those events have no notification we can rely on, and a note that silently stayed
         // off screen is the one failure the user is sure to see.
         reshowLostNotes()
+        // And a note that is no longer pinned, but is still on the full-screen Space (or on a desktop
+        // Space the user has left), comes back to the desktop.
+        moveToDesktopSpace()
+    }
+
+    /// Follows the user across Spaces. Unpinned notes belong to the ordinary desktop, so they live on
+    /// the desktop's Space — not on another app's full-screen one, and not on a desktop Space the
+    /// user has navigated away from.
+    ///
+    /// This matters most for a note *just unpinned while its display was full screen*: it has never
+    /// been shown on an ordinary Space, so it knows no desktop to go back to. Unpinning it there
+    /// leaves it on the full-screen Space (where the old rules don't apply to it any more) until
+    /// something moves it — and the moment the user leaves that Space, it is off screen for good.
+    ///
+    /// Cheap enough for the once-a-second sweep: only panels that are on a full-screen display or
+    /// not on the active Space do any work.
+    func moveToDesktopSpace() {
+        guard let screenSpaces = currentScreenSpaces() else { return }
+        for (id, panel) in panels
+        where !panel.isPinned && !panel.userSummoned && !hiddenByFilter.contains(id)
+            && !hiddenForFullScreen.contains(id) {
+            guard panel.wasOrderedOut, let display = display(of: panel) else { continue }
+            // Not pinned, and the display is not on an ordinary desktop Space (another app's
+            // full-screen Space, or a desktop Space the user has left): re-showing it now orders it
+            // onto the Space that *is* current — the way this app shows any of its windows.
+            if !screenSpaces.showsDesktopSpace(display) {
+                panel.showInBackground(raise: false)
+            }
+        }
+    }
+
+    /// The display a panel mostly lies on, from this manager's point of view.
+    private func display(of panel: NotePanel) -> CGRect? {
+        let area = Self.area(of: frame(of: panel))
+        guard area > 0 else { return nil }
+        // The display the note covers most of. A note straddling two displays exactly in half has no
+        // majority, so fall back to the first one it actually overlaps (rather than "none"), which
+        // keeps it on a Space instead of making it belong nowhere.
+        let displays = displays()
+        if let majority = displays.first(where: { Self.intersectionArea(frame(of: panel), $0) > area * 0.5 }) {
+            return majority
+        }
+        return displays.first { Self.intersectionArea(frame(of: panel), $0) > 0 }
     }
 
     /// The live query: the displays another app is showing a full-screen Space on right now.
@@ -184,12 +370,21 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     }
 
     /// Takes every unpinned panel *on a full-screen display* off screen — including panels shown
-    /// since the last sweep (opened by the user, by an agent, or restored). Panels remain live
-    /// (controllers, text, `isOpen`); only the window is ordered out.
+    /// since the last sweep (opened by the user, by an agent, or restored), and one **just unpinned**
+    /// there (it was on the Space because the pin allowed it; the pin going away must take it off
+    /// now, not on the next Space change). Panels remain live (controllers, text, `isOpen`); only the
+    /// window is ordered out.
     func enforceFullScreenPolicy() {
-        guard otherAppIsFullScreen else { return }
+        // Deliberately not gated on `otherAppIsFullScreen`: the full-screen Space may be *Tic's own*
+        // (the user full-screens one of our windows — easy to do from the palette, and VS Code's
+        // quick-open/command palettes front Tic while leaving their own Space up). Nothing else
+        // re-hides the notes in that case, so an unpinned note kept sitting over Tic's full-screen
+        // window, and — because its Space covers the desktop — looked "stuck" over the other app's
+        // after that app came back.
         for (id, panel) in panels
-        where !panel.isPinned && !hiddenByFilter.contains(id) && isOnFullScreenDisplay(panel) {
+        where !panel.isPinned && !panel.userSummoned && !hiddenByFilter.contains(id)
+            && isOnFullScreenDisplay(panel) {
+
             hiddenForFullScreen.insert(id)
             // Idempotent: takes the panel off screen if it is still on it.
             panel.applyFullScreenSuppression(true)
@@ -201,10 +396,15 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// Measured against the *note's* own area: a note belongs to the display it mostly lies on, not
     /// to the display that happens to be the biggest one it overlaps.
     func isOnFullScreenDisplay(_ panel: NotePanel) -> Bool {
-        let panelArea = Self.area(of: panel.frame)
+        let panelArea = Self.area(of: frame(of: panel))
         guard panelArea > 0 else { return false }
-        return fullScreenDisplays.contains { display in
-            Self.intersectionArea(panel.frame, display) >= panelArea * 0.5
+        let fullScreen: [CGRect] = fullScreenDisplays
+        return fullScreen.contains { (display: CGRect) -> Bool in
+            // Mostly on it — or, with no majority (a note straddling the seam), partly on it and the
+            // only display it overlaps at all.
+            let overlap = Self.intersectionArea(frame(of: panel), display)
+            if overlap > panelArea * 0.5 { return true }
+            return overlap > 0 && fullScreen.count == 1 && self.display(of: panel) == display
         }
     }
 
@@ -239,6 +439,19 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         updatePanelSuppression()
 
         if isFullScreen {
+            // A pinned note was shown while its display was an ordinary desktop, and the app went
+            // full screen over it: it stays on the desktop's Space unless it is put on the
+            // full-screen one now. Pinned notes want to be seen there — that is what the pin is for.
+            for panel in panels.values where panel.isPinned && self.isOnFullScreenDisplay(panel) {
+                panel.showInBackground(raise: false)
+            }
+            // Everything in the window list is now above the app's newly-made full-screen window.
+            // Notes that were already up (pinned ones) must reclaim the top, or a note shown later
+            // covers them.
+            bringPinnedNotesToFront()
+        }
+
+        if isFullScreen {
             // The full-screen app may have moved to *another* display: the notes it left behind are
             // free again, and must not stay off screen for good.
             restoreNotesOffFullScreenDisplays()
@@ -258,6 +471,24 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         restoreNotes()
     }
 
+    /// Another app came to the front: if it isn't Tic, the user has gone back to it, so the notes
+    /// they summoned over it step back out of the way. (Tic activating itself — a menu opening, a
+    /// note clicked — is not "leaving".)
+    private func releaseSummonedNotesIfUserLeftTic(activatedPID: pid_t?) {
+        guard !summonedWhileFullScreen.isEmpty, let activatedPID else { return }
+        guard activatedPID != ProcessInfo.processInfo.processIdentifier else { return }
+        releaseSummonedNotes()
+    }
+
+    /// Puts the pinned notes back on top of everything else this app shows, in a stable order.
+    private func bringPinnedNotesToFront() {
+        for panel in panels.values.sorted(by: { $0.noteID.uuidString < $1.noteID.uuidString })
+        where panel.isPinned {
+            panel.raiseRegardless()
+            panel.joinFullScreenSpace()
+        }
+    }
+
     /// Whether the last sweep saw the full-screen Space go away and is waiting for a second,
     /// agreeing reading before it puts the notes back.
     private var pendingRestore = false
@@ -265,7 +496,7 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// Each panel's own gate, per panel: only the notes on a full-screen display are held off the
     /// screen — a note on the other display is untouched.
     private func updatePanelSuppression() {
-        for panel in panels.values {
+        for panel in panels.values where !panel.userSummoned {
             panel.applyFullScreenSuppression(isOnFullScreenDisplay(panel))
         }
     }
@@ -417,21 +648,38 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     struct ScreenSpaces {
         /// Whether `display` is currently showing a full-screen app's Space.
         var showsFullScreenApp: (CGRect) -> Bool
+        /// Whether `display` is currently on one of the user's ordinary desktop Spaces.
+        var showsDesktopSpace: (CGRect) -> Bool
+    }
+
+    /// What each display's current Space is, honouring the tests' stand-in when there is one.
+    private func currentScreenSpaces() -> ScreenSpaces? {
+        spaceProbe?() ?? Self.screenSpaces()
     }
 
     static func screenSpaces() -> ScreenSpaces? {
         guard let connect = SkyLight.connect, let copySpaces = SkyLight.copySpaces,
               let displays = copySpaces(connect()) as? [[String: Any]]
         else { return nil }
-        let fullScreen: [CGRect] = displays.compactMap { display in
+        // Per display: its frame and the type of the Space showing on it right now.
+        let current: [(frame: CGRect, type: Int, isFullScreen: Bool)] = displays.compactMap { display in
             guard let space = display["Current Space"] as? [String: Any],
-                  (space["type"] as? NSNumber)?.intValue == 4, space["fs_wid"] != nil,
+                  let type = (space["type"] as? NSNumber)?.intValue,
                   let uuid = display["Display Identifier"] as? String,
                   let frame = Self.displayFrame(uuid: uuid)
             else { return nil }
-            return frame
+            return (frame, type, type == 4 && space["fs_wid"] != nil)
         }
-        return ScreenSpaces { display in fullScreen.contains { $0.equalTo(display) } }
+        return ScreenSpaces(
+            showsFullScreenApp: { display in
+                current.contains { $0.isFullScreen && $0.frame.equalTo(display) }
+            },
+            // `type: 0` is an ordinary desktop Space; anything else (full screen, or a transitional
+            // state we can't name) is not.
+            showsDesktopSpace: { display in
+                current.contains { $0.type == 0 && $0.frame.equalTo(display) }
+            }
+        )
     }
 
     /// The frame of the display whose window-server UUID is `uuid` (NSScreen's device description

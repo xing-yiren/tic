@@ -116,6 +116,12 @@ final class AppModel {
                 AppModel.shared.logTestHook("reachForTic")
             }
         }
+        center.addObserver(forName: NSNotification.Name("dev.tic.activate"), object: nil, queue: .main) { _ in
+            Task { @MainActor in
+                NSApp.activate()
+                AppModel.shared.logTestHook("activate")
+            }
+        }
         center.addObserver(forName: NSNotification.Name("dev.tic.reachForList"), object: nil, queue: .main) { _ in
             Task { @MainActor in
                 if let note = AppModel.shared.notes.first { AppModel.shared.open(note) }
@@ -336,33 +342,22 @@ final class AppModel {
         // goes back to the app (see `NoteWindowManager.summon`).
         windows.summon(note)
         windows.openNote(note)
-        // Same rule as `noteUserReachedForTic`: activating over another app's full-screen Space
-        // would switch away from it, taking the just-summoned note with it.
-        if Self.shouldActivateWhenReachingForTic(otherAppIsFullScreen: windows.otherAppIsFullScreen) {
-            NSApp.activate()
-        }
+        // Same order as `noteUserReachedForTic`: the picked note is already on the full-screen
+        // Space (above), so activating Tic now keeps the user on it and makes the note typeable.
+        NSApp.activate()
     }
 
     /// The user reached for Tic from its icon (menu/dock): whatever is already on screen stays
     /// visible — and editable — over a full-screen app until the user goes back to that app.
     func noteUserReachedForTic() {
-        // Activating Tic while another app is full screen takes the user out of that app's Space —
-        // macOS switches to the Space Tic's ordinary windows live on, and the full-screen app (and
-        // the notes we were about to show over it) disappear with it. Reaching for Tic's icon must
-        // not do that: the notes are put above the full-screen app instead, and the user stays put.
-        if Self.shouldActivateWhenReachingForTic(otherAppIsFullScreen: windows.otherAppIsFullScreen) {
-            NSApp.activate()
-        }
+        // Order matters. Activating Tic *before* it has anything on the full-screen Space switches
+        // macOS to the Space its ordinary windows live on, and the full-screen app (with the notes
+        // about to be shown over it) disappears. Once the notes are on that Space, activating Tic
+        // keeps the user there — and it has to happen, or the notes take no keyboard input: a
+        // non-activating panel only becomes key in an active app, so the user could see the list
+        // but not type in it.
         windows.noteUserShow()
-    }
-
-    /// Whether reaching for Tic (its menu icon, a list in its menu) may activate the app.
-    ///
-    /// Not while another app is full screen: activation switches macOS to the Space Tic's ordinary
-    /// windows live on, which takes the user out of the full-screen app — and the notes meant to be
-    /// shown over it go with it. The notes are summoned above the full-screen app instead.
-    nonisolated static func shouldActivateWhenReachingForTic(otherAppIsFullScreen: Bool) -> Bool {
-        !otherAppIsFullScreen
+        NSApp.activate()
     }
 
     /// Bring all open notes to the front.

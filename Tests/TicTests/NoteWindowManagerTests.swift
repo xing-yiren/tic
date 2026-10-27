@@ -61,8 +61,11 @@ struct NoteWindowManagerFullScreenTests {
         /// placed off the machine's own displays, so the test's geometry is kept here).
         let logicalFrame: CGRect
         var orders: [String] = []
+        var madeKey = 0
+        var raiseCount = 0
+        override func makeKey() { madeKey += 1 }
         override func showAsOrdinaryWindow() { orders.append("show") ; super.showAsOrdinaryWindow() }
-        override func raiseRegardless() { orders.append("raise"); super.raiseRegardless() }
+        override func raiseRegardless() { orders.append("raise"); raiseCount += 1; super.raiseRegardless() }
         /// Which ordering primitive the panel itself picks for a plain `orderFront` (the shortcut
         /// into it used to end up in the on-screen list regardless of the pin).
         var plainOrderUsesSuper = false
@@ -425,6 +428,9 @@ struct NoteWindowManagerFullScreenTests {
         #expect(!onMain.userSummoned, "a note on another display was never hidden")
         #expect(manager.summonedWhileFullScreen == [onSecond.noteID])
         #expect(onSecond.level == NotePanel.userCanvasLevel)
+        // Key, so the user can type in it: a non-activating panel takes the keyboard only when it
+        // is the key window of an active app.
+        #expect(onSecond.madeKey > 0)
         // The sweep must not take it off again while it is the user's canvas.
         manager.applyFullScreenPolicy()
         #expect(!onSecond.suppressedByFullScreen, "suppressed=\(onSecond.suppressedByFullScreen) summoned=\(onSecond.userSummoned) hidden=\(manager.hiddenForFullScreen) orders=\(onSecond.orders)")
@@ -466,6 +472,31 @@ struct NoteWindowManagerFullScreenTests {
         #expect(panel.level != NotePanel.userCanvasLevel)
     }
 
+    @Test("typing into a summoned note keeps it on screen")
+    func typingInASummonedNoteKeepsIt() throws {
+        // The regression: a key monitor released the notes on the first keystroke "outside a note",
+        // and while Tic is summoned its key window need not be the panel — so typing into the list
+        // the user just summoned made it vanish mid-edit.
+        let manager = try makeManager()
+        manager.fullScreenProbe = { [secondDisplay] }
+        let panel = RecordingPanel(pinned: false, frame: noteOnSecond)
+        open(manager, panel)
+        manager.summon(id(of: panel))
+        #expect(panel.userSummoned)
+
+        let key = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil,
+            characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0
+        )!
+        NSApp.sendEvent(key)
+        manager.applyFullScreenPolicy()   // the once-a-second sweep must leave it alone too
+
+        #expect(panel.userSummoned, "typing in the note must not release it")
+        #expect(!panel.suppressedByFullScreen)
+        #expect(panel.level == NotePanel.userCanvasLevel)
+    }
+
     @Test("reaching for Tic on an ordinary desktop summons nothing")
     func userShowDoesNothingWithoutFullScreen() throws {
         let manager = try makeManager()
@@ -477,6 +508,56 @@ struct NoteWindowManagerFullScreenTests {
 
         #expect(manager.summonedWhileFullScreen.isEmpty)
         #expect(!panel.userSummoned)
+    }
+
+    @Test("a pinned note is never held off the full-screen Space")
+    func pinnedNoteIsNeverSuppressed() throws {
+        // The regression: the suppression pass covered every panel, so a pinned note on the
+        // full-screen display was held off screen and then re-shown by the pinned-note pass — once a
+        // second, which is what made a pinned note flicker.
+        let manager = try makeManager()
+        manager.fullScreenProbe = { [secondDisplay] }
+        let pinned = RecordingPanel(pinned: true, frame: noteOnSecond)
+        open(manager, pinned)
+
+        for _ in 0..<3 { manager.applyFullScreenPolicy() }
+
+        #expect(!pinned.suppressedByFullScreen, "a pinned note stays on the Space")
+        #expect(!manager.isHiddenForFullScreen(pinned.noteID))
+
+        // Pinned from the start of a full-screen visit, rather than opened on a desktop and then
+        // covered by one: still not suppressed.
+        let late = RecordingPanel(pinned: true, frame: noteOnSecond)
+        open(manager, late)
+        manager.applyFullScreenPolicy()
+        #expect(!late.suppressedByFullScreen)
+    }
+
+    @Test("a pinned note on a full-screen Space is raised once, not on every sweep")
+    func pinnedNoteDoesNotFlicker() throws {
+        // The regression: the policy re-raised (and re-ordered) every pinned note on each
+        // once-a-second sweep, so a pinned note over a full-screen app visibly flickered.
+        let manager = try makeManager()
+        let pinned = RecordingPanel(pinned: true, frame: noteOnSecond)
+        open(manager, pinned)
+        manager.fullScreenProbe = { [secondDisplay] }
+        manager.applyFullScreenPolicy()
+        let raisesAfterFirst = pinned.raiseCount
+
+        for _ in 0..<5 { manager.applyFullScreenPolicy() }   // five more seconds of sweeping
+
+        #expect(pinned.raiseCount == raisesAfterFirst, "orders: \(pinned.orders) raises=\(pinned.raiseCount)")
+
+        // Unpinning and pinning it again (a new "belongs here" event) must still put it back.
+        // (In the app this bookkeeping reset happens in `onApplyBehavior`, set up by `openNote`,
+        // which these tests bypass by registering a bare panel.)
+        pinned.apply(floatOnTop: false, showOnAllSpaces: true)
+        manager.forgetRaisedPinnedForTesting()
+        manager.applyFullScreenPolicy()
+        pinned.apply(floatOnTop: true, showOnAllSpaces: true)
+        manager.forgetRaisedPinnedForTesting()
+        manager.applyFullScreenPolicy()
+        #expect(pinned.raiseCount > raisesAfterFirst, "a re-pin puts it back on the Space")
     }
 
     @Test("a pinned note is not managed by the summon (it was already visible)")
@@ -509,14 +590,5 @@ struct NoteWindowManagerFullScreenTests {
         manager.applyFullScreenPolicy()
         #expect(unpinned.suppressedByFullScreen)
         #expect(unpinned.restoreOrdering == .below, "suppressed=\(unpinned.suppressedByFullScreen) ordering=\(unpinned.restoreOrdering.rawValue)")
-    }
-}
-
-@Suite("Reaching for Tic while another app is full screen")
-struct ReachingForTicTests {
-    @Test("activating over a full-screen app is what switches away from it, so it is skipped")
-    func doesNotActivateOverFullScreen() {
-        #expect(!AppModel.shouldActivateWhenReachingForTic(otherAppIsFullScreen: true))
-        #expect(AppModel.shouldActivateWhenReachingForTic(otherAppIsFullScreen: false))
     }
 }

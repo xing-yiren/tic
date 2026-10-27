@@ -102,7 +102,6 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
 
     /// Lets go of every summoned note. Called as soon as the user goes back to the full-screen app.
     func releaseSummonedNotes() {
-        removeLeaveMonitor()
         guard !summonedWhileFullScreen.isEmpty else { return }
         let released = summonedWhileFullScreen
         summonedWhileFullScreen.removeAll()
@@ -118,33 +117,22 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// Called by every surface the user uses to bring Tic forward (menu bar, Overview, palette).
     /// Notes on a full-screen display are shown over it from here on — the user asked for exactly
     /// what is on screen.
+    ///
+    /// Only does anything while another app is full screen. Call it *before* activating the app
+    /// (see `AppModel.noteUserReachedForTic`): activating first switches away from the full-screen
+    /// Space; activating after keeps the user on it and lets the summoned note take the keyboard.
     func noteUserShow() {
         guard otherAppIsFullScreen else { return }
         markSummoned(onFullScreenDisplaysOnly: true)
-        installLeaveMonitorIfNeeded()
     }
 
-    /// While notes are summoned, watches for the user moving to the full-screen app without leaving
-    /// Tic: their keystrokes then go to that app even though a note still holds focus, so the notes
-    /// step aside as soon as keys are pressed outside them (see `releaseSummonedNotes`).
-    private var leaveMonitor: Any?
-
-    private func installLeaveMonitorIfNeeded() {
-        guard leaveMonitor == nil else { return }
-        leaveMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, !self.summonedWhileFullScreen.isEmpty else { return event }
-            let keyIsInANote = event.window.map { window in
-                self.panels.values.contains { $0 === window }
-            } ?? false
-            if !keyIsInANote { self.releaseSummonedNotes() }
-            return event
-        }
-    }
-
-    private func removeLeaveMonitor() {
-        if let leaveMonitor { NSEvent.removeMonitor(leaveMonitor) }
-        leaveMonitor = nil
-    }
+    /// Whether the notes a summon put on the full-screen Space are still wanted.
+    ///
+    /// Only two things end a summon, and both mean the user has truly gone back to the full-screen
+    /// app: that app activating (see `releaseSummonedNotesIfUserLeftTic`), and the Space changing
+    /// (see the observer in `observeOtherAppsFullScreen`). Keys and clicks inside Tic must not end
+    /// it — the whole point is that the summoned note is *edited* while the app stays behind it; an
+    /// earlier key monitor released the notes on the first keystroke typed into the note.
 
     /// Flags the unpinned notes on full-screen displays as summoned: the user asked to see what is
     /// on Tic right now, so those notes ride above the full-screen app until the user goes back to it.
@@ -442,13 +430,21 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
             // A pinned note was shown while its display was an ordinary desktop, and the app went
             // full screen over it: it stays on the desktop's Space unless it is put on the
             // full-screen one now. Pinned notes want to be seen there — that is what the pin is for.
-            for panel in panels.values where panel.isPinned && self.isOnFullScreenDisplay(panel) {
+            //
+            // Done once per note per full-screen visit (`raisedPinned`), not on every sweep: doing
+            // it unconditionally re-ordered and re-raised each pinned note once a second, which
+            // made a pinned note flicker while an app was full screen.
+            for panel in panels.values
+            where panel.isPinned && self.isOnFullScreenDisplay(panel)
+                && raisedPinned.insert(panel.noteID).inserted {
                 panel.showInBackground(raise: false)
             }
             // Everything in the window list is now above the app's newly-made full-screen window.
             // Notes that were already up (pinned ones) must reclaim the top, or a note shown later
             // covers them.
-            bringPinnedNotesToFront()
+            if displaysChanged { bringPinnedNotesToFront() }
+        } else {
+            raisedPinned.removeAll()
         }
 
         if isFullScreen {
@@ -489,6 +485,11 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         }
     }
 
+    /// The pinned notes already put onto the full-screen Space during this visit. A note leaves the
+    /// set when it is pinned/unpinned, shown again, or the full screen goes away, so it can be put
+    /// back when that happens — but not once a second while nothing changes.
+    private var raisedPinned: Set<UUID> = []
+
     /// Whether the last sweep saw the full-screen Space go away and is waiting for a second,
     /// agreeing reading before it puts the notes back.
     private var pendingRestore = false
@@ -496,14 +497,26 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// Each panel's own gate, per panel: only the notes on a full-screen display are held off the
     /// screen — a note on the other display is untouched.
     private func updatePanelSuppression() {
+        // Only the notes the policy actually holds off screen. A pinned note is never suppressed —
+        // it belongs on the full-screen Space — and passing it through here made the two sides
+        // fight: the sweep suppressed it, the pinned-note pass re-showed it, once a second, and the
+        // note visibly flickered.
         for panel in panels.values where !panel.userSummoned {
-            panel.applyFullScreenSuppression(isOnFullScreenDisplay(panel))
+            panel.applyFullScreenSuppression(shouldSuppress(panel))
         }
+    }
+
+    /// Whether the full-screen policy holds this note off screen: it is unpinned, not summoned, and
+    /// sits on the display an app is filling with a full-screen Space. A pinned note is never held —
+    /// being seen over the full-screen app is what the pin is for.
+    private func shouldSuppress(_ panel: NotePanel) -> Bool {
+        !panel.isPinned && !panel.userSummoned && isOnFullScreenDisplay(panel)
     }
 
     /// Drops from the restore set any note whose panel has since closed (the user's X, a category
     /// change). The closed note keeps its own "not open" record; it must not be re-shown by a sweep.
     private func restoreOnlyPanelsStillOpen() {
+        raisedPinned.formIntersection(panels.keys)
         guard !hiddenForFullScreen.isEmpty else { return }
         hiddenForFullScreen.formIntersection(panels.keys)
     }
@@ -528,6 +541,12 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
             panel.applyFullScreenSuppression(false)
             panel.showInBackground(raise: false)
         }
+    }
+
+    /// Clears the "already put on the full-screen Space" bookkeeping. Used by tests, which register
+    /// bare panels and so never run the `onApplyBehavior` that does this in the app.
+    internal func forgetRaisedPinnedForTesting() {
+        raisedPinned.removeAll()
     }
 
     /// Adds an already-built panel to the managed set. Used by tests; `openNote` is the production
@@ -767,14 +786,18 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         let panel = NotePanel(note: note, content: AnyView(NoteView(controller: controller)))
         panels[note.id] = panel
         // A note opened while another app is full screen stays off screen — but only if it is on the
-        // display that is full screen (see `isOnFullScreenDisplay`).
-        panel.applyFullScreenSuppression(isOnFullScreenDisplay(panel))
+        // display that is full screen (see `isOnFullScreenDisplay`), and never if it is pinned: a
+        // pinned note belongs on that Space.
+        panel.applyFullScreenSuppression(shouldSuppress(panel))
         savedFrames[note.id] = CGRect(x: note.frameX, y: note.frameY, width: note.frameW, height: note.frameH)
 
         // Live-window side effects. Weak captures so the closures never keep the panel alive
         // past close (windowWillClose nils the controller, releasing them).
-        controller.onApplyBehavior = { [weak panel] floatOnTop, showOnAllSpaces in
+        controller.onApplyBehavior = { [weak self, weak panel] floatOnTop, showOnAllSpaces in
             panel?.apply(floatOnTop: floatOnTop, showOnAllSpaces: showOnAllSpaces)
+            // Pinning (or unpinning) is a new "this note belongs on the full-screen Space" event:
+            // forget the visit's bookkeeping so the policy below puts a just-pinned note there.
+            if let id = panel?.noteID { self?.raisedPinned.remove(id) }
         }
         controller.onWindowBehaviorChanged = { [weak self] in self?.applyFullScreenPolicy() }
         controller.onClose = { [weak panel, appDatabase] in

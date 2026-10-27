@@ -160,11 +160,15 @@ struct NoteView: View {
         // Everything below reasons in *displayed* space: the source-of-truth `tasks` with the note's
         // completed-display options applied. Equal to `controller.tasks` when both options are off.
         let display = controller.displayedTasks
+        // Folding is applied *after* the completed-display options, so a folded heading hides
+        // whatever its subtree shows either way. Indent levels are untouched, so rows keep their
+        // depth (and their insert/drag maths) while hidden.
+        let shown = TaskOutline.visible(display, collapsed: controller.collapsedTaskIDs)
         let add = activeAdd
         return ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(display.enumerated()), id: \.element.id) { index, task in
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, task in
                         if isDragging, dropIndex == index { dropIndicator(level: dropLevel) }
                         // `addingRowID` is an id (not the tasks array) so a typing-driven re-render
                         // does NOT rebuild this row while it's being edited or composed in — a
@@ -172,7 +176,7 @@ struct NoteView: View {
                         // input method's candidate window. Changing it does update autoEdit, so a
                         // rapid-add run still opens the next row. (`row(_:)` is called, not the
                         // autoclosured `ForEach` overload.)
-                        row(task).onChange(of: addingRowID) { _, _ in }
+                        row(task, among: shown).onChange(of: addingRowID) { _, _ in }
                         if let add, add.afterIndex == index {
                             AddSubtaskRow(
                                 theme: theme,
@@ -186,7 +190,7 @@ struct NoteView: View {
                             )
                         }
                     }
-                    if isDragging, dropIndex == display.count { dropIndicator(level: dropLevel) }
+                    if isDragging, dropIndex == shown.count { dropIndicator(level: dropLevel) }
                 }
                 .padding(.top, 4)
                 .padding(.bottom, 12)   // breathing room so the last row never crowds the quick-add bar
@@ -267,6 +271,39 @@ struct NoteView: View {
         }
     }
 
+    // MARK: - Folding
+
+    /// Whether `task` has subtasks, as displayed. Computed over the *unfiltered* displayed list: a
+    /// folded row's children are still there, which is exactly what makes it foldable (and keeps its
+    /// chevron pointing the same way while folded).
+    private func hasSubtasks(_ task: TaskItem, in shown: [TaskItem]) -> Bool {
+        guard let index = shown.firstIndex(where: { $0.id == task.id }) else { return false }
+        return TaskOutline.hasChildren(shown, at: index)
+    }
+
+    /// Folds a heading's subtasks away, or brings them back.
+    ///
+    /// Animates the rows in/out and, when folding, ends any rapid-add run that was heading into the
+    /// hidden rows — otherwise the keyboard caret would sit in a row the user just folded away.
+    private func toggleCollapse(_ task: TaskItem) {
+        let folding = !controller.isCollapsed(task)
+        if folding, let adding = addingRowID,
+           let added = controller.tasks.first(where: { $0.id == adding }),
+           isDescendant(added, of: task) {
+            endEditing()
+        }
+        withAnimation(.easeInOut(duration: 0.15)) { controller.toggleCollapse(task) }
+    }
+
+    /// Whether `task` sits anywhere in `heading`'s subtree.
+    private func isDescendant(_ task: TaskItem, of heading: TaskItem) -> Bool {
+        guard task.id != heading.id else { return false }
+        let tasks = controller.tasks
+        guard let headingIndex = tasks.firstIndex(where: { $0.id == heading.id }),
+              let index = tasks.firstIndex(where: { $0.id == task.id }) else { return false }
+        return TaskOutline.subtreeRange(tasks, at: headingIndex).contains(index)
+    }
+
     /// The level-0 heading that owns `task`'s group (itself if it's already top-level). The add
     /// affordance is scoped to this so it sits at the bottom of the whole section, stable while the
     /// pointer roams the section's rows.
@@ -290,7 +327,9 @@ struct NoteView: View {
         return ActiveAdd(afterIndex: afterIndex, level: root.indentLevel + 1, parentID: root.id)
     }
 
-    private func row(_ task: TaskItem) -> some View {
+    /// `shown` is the list as displayed (folds applied): it answers "does this row have subtasks?"
+    /// and "is it folded?", which are properties of what the user sees rather than of the store.
+    private func row(_ task: TaskItem, among shown: [TaskItem]) -> some View {
         let dragging = draggingTaskID == task.id
         return TaskRowView(
             task: task,
@@ -307,6 +346,9 @@ struct NoteView: View {
             onHoverChanged: { hovering in
                 if hovering { withAnimation(.easeInOut(duration: 0.12)) { activeSectionID = sectionRootID(of: task) } }
             },
+            hasChildren: hasSubtasks(task, in: shown),
+            isCollapsed: controller.isCollapsed(task),
+            onToggleCollapse: { toggleCollapse(task) },
             image: controller.imageCrops[task.id].map { crop in
                 TaskImageView(
                     image: controller.thumbnails[task.id], crop: crop, theme: theme,

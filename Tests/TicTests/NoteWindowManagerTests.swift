@@ -497,6 +497,52 @@ struct NoteWindowManagerFullScreenTests {
         #expect(panel.level == NotePanel.userCanvasLevel)
     }
 
+    @Test("clicking back into the full-screen app hides the summoned notes")
+    func clickBackIntoTheAppReleasesTheSummon() throws {
+        // Going back to the full-screen app doesn't always arrive as an app activation — the click
+        // can be spent re-activating that app — so the click itself has to end the summon.
+        let manager = try makeManager()
+        manager.fullScreenProbe = { [secondDisplay] }
+        let panel = RecordingPanel(pinned: false, frame: noteOnSecond)
+        open(manager, panel)
+        manager.summon(id(of: panel))
+        #expect(panel.userSummoned)
+
+        manager.otherAppClicked()
+
+        #expect(!panel.userSummoned, "the user is working in the app the note covers")
+        #expect(panel.suppressedByFullScreen)
+        #expect(manager.summonedWhileFullScreen.isEmpty)
+    }
+
+    @Test("a click with nothing summoned changes nothing")
+    func clickWithoutASummonIsHarmless() throws {
+        let manager = try makeManager()
+        manager.fullScreenProbe = { [secondDisplay] }
+        let panel = RecordingPanel(pinned: false, frame: noteOnSecond)
+        open(manager, panel)
+        manager.applyFullScreenPolicy()
+
+        manager.otherAppClicked()
+
+        #expect(!panel.userSummoned)
+        #expect(panel.suppressedByFullScreen, "a click elsewhere must not show a held note")
+    }
+
+    @Test("a pinned note survives a click back into the app")
+    func clickKeepsPinnedNotes() throws {
+        // The pin means "always on top": clicking the app behind must not take it away.
+        let manager = try makeManager()
+        manager.fullScreenProbe = { [secondDisplay] }
+        let panel = RecordingPanel(pinned: true, frame: noteOnSecond)
+        open(manager, panel)
+
+        manager.otherAppClicked()
+        manager.applyFullScreenPolicy()
+
+        #expect(!panel.suppressedByFullScreen)
+    }
+
     @Test("reaching for Tic on an ordinary desktop summons nothing")
     func userShowDoesNothingWithoutFullScreen() throws {
         let manager = try makeManager()

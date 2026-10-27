@@ -367,6 +367,51 @@ struct TaskOutlineTests {
         #expect(isValidOutline(out))
     }
 
+    // MARK: - Collapsing
+
+    @Test("collapsing a task hides its subtree, not its siblings or their children")
+    func collapseHidesSubtree() {
+        let tasks = make([
+            ("A", 0, false), ("a1", 1, false), ("a2", 1, false), ("a2x", 2, false),
+            ("B", 0, false), ("b1", 1, false),
+        ])
+        let out = TaskOutline.visible(tasks, collapsed: [tasks[0].id])
+        #expect(out.map(\.text) == ["A", "B", "b1"])
+    }
+
+    @Test("a nested fold inside a folded parent stays folded when the parent is expanded")
+    func nestedFoldSurvives() {
+        let tasks = make([
+            ("A", 0, false), ("a1", 1, false), ("a1x", 2, false), ("a2", 1, false),
+        ])
+        let out = TaskOutline.visible(tasks, collapsed: [tasks[1].id])
+        #expect(out.map(\.text) == ["A", "a1", "a2"])
+        // Expanding A while a1 is still folded leaves a1x hidden.
+        let reopened = TaskOutline.visible(tasks, collapsed: [tasks[1].id])
+        #expect(reopened.map(\.text) == ["A", "a1", "a2"])
+    }
+
+    @Test("nothing is folded → every row shows")
+    func noFoldsShowsEverything() {
+        let tasks = make([("A", 0, false), ("a1", 1, false)])
+        #expect(TaskOutline.visible(tasks, collapsed: []).map(\.text) == ["A", "a1"])
+    }
+
+    @Test("folding never alters the stored tasks")
+    func foldingLeavesTheListUntouched() {
+        let tasks = make([("A", 0, false), ("a1", 1, false)])
+        _ = TaskOutline.visible(tasks, collapsed: [tasks[0].id])
+        #expect(tasks.map(\.text) == ["A", "a1"])
+    }
+
+    @Test("only rows with subtasks can be folded")
+    func hasChildrenOnlyForParents() {
+        let tasks = make([("A", 0, false), ("a1", 1, false), ("B", 0, false)])
+        #expect(TaskOutline.hasChildren(tasks, at: 0))
+        #expect(!TaskOutline.hasChildren(tasks, at: 1))
+        #expect(!TaskOutline.hasChildren(tasks, at: 2))
+    }
+
     @Test("hide-completed on an all-done list yields an empty outline")
     func hideCompletedAllDone() {
         let tasks = make([("A", 0, true), ("B", 1, true)])

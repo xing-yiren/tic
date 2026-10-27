@@ -122,11 +122,49 @@ final class AppModel {
                 AppModel.shared.logTestHook("activate")
             }
         }
+        center.addObserver(forName: NSNotification.Name("dev.tic.dockClick"), object: nil, queue: .main) { _ in
+            Task { @MainActor in
+                // Exactly what a Dock click does (see `AppDelegate.applicationShouldHandleReopen`).
+                AppModel.shared.noteUserReachedForTic()
+                AppModel.shared.logTestHook("dockClick")
+            }
+        }
+        // Reads the note list back out of the UI: the rows' texts and levels as rendered, and which
+        // headings are folded. Confirms folding hides rows on screen (not just in the model).
+        center.addObserver(forName: NSNotification.Name("dev.tic.logTasks"), object: nil, queue: .main) { _ in
+            Task { @MainActor in AppModel.shared.logTestTasks() }
+        }
+        // What a click on a heading row does (the row's tap → `NoteView.toggleCollapse`), for a
+        // heading with subtasks: fold, and fold again to bring them back.
+        center.addObserver(forName: NSNotification.Name("dev.tic.foldHeading"), object: nil, queue: .main) { _ in
+            Task { @MainActor in
+                for controller in AppModel.shared.windows.openControllers {
+                    let display = controller.displayedTasks
+                    guard let heading = display.first(where: {
+                        guard let i = display.firstIndex(of: $0) else { return false }
+                        return TaskOutline.hasChildren(display, at: i)
+                    }) else { continue }
+                    controller.toggleCollapse(heading)
+                }
+                AppModel.shared.logTestTasks()
+            }
+        }
         center.addObserver(forName: NSNotification.Name("dev.tic.reachForList"), object: nil, queue: .main) { _ in
             Task { @MainActor in
                 if let note = AppModel.shared.notes.first { AppModel.shared.open(note) }
                 AppModel.shared.logTestHook("reachForList")
             }
+        }
+    }
+
+    /// Development-only: what each open note's list currently shows.
+    private func logTestTasks() {
+        for controller in windows.openControllers {
+            let shown = TaskOutline.visible(controller.displayedTasks, collapsed: controller.collapsedTaskIDs)
+            let line = "[TASKS] \(controller.note.title) stored=\(controller.tasks.count) "
+                + "shown=\(shown.map { "\($0.indentLevel):\($0.text.prefix(14))" }) "
+                + "folded=\(controller.collapsedTaskIDs.count)"
+            NSLog("%@", line as NSString)
         }
     }
 

@@ -34,6 +34,14 @@ struct TaskRowView: View {
     let image: TaskImageView?
     /// ⌘V of an image while this row is being edited attaches it to the task.
     let onPasteImage: (Data) -> Void
+    /// Whether this row has subtasks to fold away — only then does it show a disclosure arrow.
+    var hasChildren = false
+    /// Whether those subtasks are currently folded away.
+    var isCollapsed = false
+    /// Clicking the text of a row that has subtasks folds them away / brings them back. Rows without
+    /// subtasks are unaffected: a click there still begins editing.
+    var onToggleCollapse: (() -> Void)?
+
     /// The task's reminder (nil = none), and callbacks to set/clear the deadline + reminder.
     var reminder: TaskReminder?
     var isOverdue = false
@@ -64,6 +72,9 @@ struct TaskRowView: View {
         onAddTask: (() -> Void)? = nil,
         onAddSubtask: (() -> Void)? = nil,
         onHoverChanged: @escaping (Bool) -> Void = { _ in },
+        hasChildren: Bool = false,
+        isCollapsed: Bool = false,
+        onToggleCollapse: (() -> Void)? = nil,
         image: TaskImageView? = nil,
         onPasteImage: @escaping (Data) -> Void = { _ in },
         reminder: TaskReminder? = nil,
@@ -83,6 +94,9 @@ struct TaskRowView: View {
         self.onAddTask = onAddTask
         self.onAddSubtask = onAddSubtask
         self.onHoverChanged = onHoverChanged
+        self.hasChildren = hasChildren
+        self.isCollapsed = isCollapsed
+        self.onToggleCollapse = onToggleCollapse
         self.image = image
         self.onPasteImage = onPasteImage
         self.reminder = reminder
@@ -113,6 +127,8 @@ struct TaskRowView: View {
                 .padding(.leading, Self.textInset)
         }
         .padding(.vertical, 2)
+        // One extra step reserved for the disclosure arrow, so a top-level heading still starts at
+        // the note's text margin and the arrow has room to its left.
         .padding(.leading, CGFloat(task.indentLevel) * NoteLayout.indentStep)
         .contentShape(Rectangle())
         // The deadline/reminder popover is anchored to the *row* rather than to the hover-revealed
@@ -141,6 +157,11 @@ struct TaskRowView: View {
             }
             .buttonStyle(.plain)
 
+            // The disclosure arrow sits in the indent step to the left of the row, so folding doesn't
+            // shift the text and a deep outline still lines up. A leaf keeps the slot (empty) to stay
+            // aligned with its siblings.
+            disclosure
+
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -164,6 +185,27 @@ struct TaskRowView: View {
             }
         }
         .contentShape(Rectangle())
+    }
+
+    /// The fold affordance: a chevron for a row with subtasks (pointing down when open, right when
+    /// folded, with a count of what is folded away), an empty slot of the same width otherwise.
+    private var disclosure: some View {
+        Group {
+            if hasChildren, let onToggleCollapse {
+                Button(action: onToggleCollapse) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(theme.secondary.opacity(0.75))
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isCollapsed ? "Show subtasks" : "Hide subtasks")
+            } else {
+                Color.clear.frame(width: 14, height: 14)
+            }
+        }
+        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
     }
 
     // MARK: - Deadline & reminder
@@ -340,7 +382,10 @@ struct TaskRowView: View {
                 .opacity(task.isDone ? 0.85 : 1)
                 .fixedSize(horizontal: false, vertical: true)   // wrap + grow, don't truncate
                 .contentShape(Rectangle())
-                .onTapGesture { beginEditing() }
+                // Clicking a heading folds its subtasks away (and back): the row's own text is the
+                // biggest target there is, and on a heading it is what the user points at. A leaf
+                // still opens for editing, as before.
+                .onTapGesture { if hasChildren { onToggleCollapse?() } else { beginEditing() } }
         }
     }
 

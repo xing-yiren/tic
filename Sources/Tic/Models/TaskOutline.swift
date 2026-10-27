@@ -54,6 +54,39 @@ enum TaskOutline {
         return (subtreeRange(tasks, at: index).upperBound, tasks[index].indentLevel)
     }
 
+    // MARK: - Collapsing
+
+    /// Whether the task at `index` has subtasks to fold away.
+    static func hasChildren(_ tasks: [TaskItem], at index: Int) -> Bool {
+        guard tasks.indices.contains(index) else { return false }
+        return !directChildren(tasks, of: index).isEmpty
+    }
+
+    /// The rows to actually show when `collapsed` holds the ids of folded tasks: every task whose
+    /// ancestor chain contains none of them.
+    ///
+    /// Folding is a *view* concern only. It lives here because it is pure outline maths over level
+    /// numbers, so it reads the same structure the rest of this file does and is testable without a
+    /// window — and it keeps the stored tasks (and the database) untouched: a folded subtask is
+    /// still counted, still saved, still found by search.
+    static func visible(_ tasks: [TaskItem], collapsed: Set<UUID>) -> [TaskItem] {
+        guard !collapsed.isEmpty else { return tasks }
+        // The level of the folded row whose subtree the rows in hand belong to; `Int.max` = none.
+        // A task's subtree is the contiguous run of following, deeper rows (see `subtreeRange`), so
+        // one depth marker is all it takes: anything deeper than the marker is hidden, and a row at
+        // or above it ends the run. Nested folds need no separate state — their rows are hidden by
+        // the outer fold already, and the inner fold's own marker is simply never reached.
+        var foldedLevel = Int.max
+        var out: [TaskItem] = []
+        out.reserveCapacity(tasks.count)
+        for task in tasks {
+            if task.indentLevel > foldedLevel { continue }
+            foldedLevel = collapsed.contains(task.id) ? task.indentLevel : .max
+            out.append(task)
+        }
+        return out
+    }
+
     // MARK: - Completion
 
     /// Toggles the task identified by `id` and returns the updated list.

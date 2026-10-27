@@ -8,6 +8,9 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     private let appDatabase: AppDatabase
     private var panels: [UUID: NotePanel] = [:]
     private var controllers: [UUID: NoteController] = [:]
+
+    /// The open notes' controllers (development test hooks read the list state through them).
+    var openControllers: [NoteController] { Array(controllers.values) }
     private var pendingFrameSaves: [UUID: Task<Void, Never>] = [:]
     /// Height a note had before it was rolled up, so it restores to the right size on expand.
     private var expandedHeights: [UUID: CGFloat] = [:]
@@ -64,6 +67,7 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
             name: NSApplication.didChangeScreenParametersNotification, object: nil
         )
         observeOtherAppsFullScreen()
+        observeClicksOutsideTic()
         observeSystemInterruptions()
     }
 
@@ -242,6 +246,39 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Watches for the user clicking somewhere that is not Tic.
+    ///
+    /// Going back to the full-screen app does not always come as an app activation: when Tic only
+    /// holds non-activating panels, a click into the app behind them can be spent on making that
+    /// app active again, so `didActivateApplicationNotification` fires late (or, after the notes
+    /// took the keyboard, not at all) and the summoned notes stay on screen. The click itself is
+    /// the reliable signal — it reached no window of ours, so the user is working in the app the
+    /// notes cover.
+    ///
+    /// A *global* monitor (not local): clicks in Tic's own windows must never end a summon, and
+    /// those are exactly the ones it doesn't see.
+    private func observeClicksOutsideTic() {
+        let monitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor in self?.otherAppClicked() }
+        }
+        // Held for the app's lifetime (see the property): a released monitor token stops delivering.
+        outsideClickMonitor = monitor
+    }
+
+    /// The global mouse monitor. It lives as long as the app, and the manager does, so it is never
+    /// removed — and `deinit` (nonisolated, and the token isn't Sendable) deliberately has nothing
+    /// to do.
+    private var outsideClickMonitor: Any?
+
+    /// A click landed on another app. Tic itself activating is the manager's business, but while
+    /// notes are summoned over a full-screen app, a click anywhere off Tic means the user has gone
+    /// back to that app — the summon ends and the notes come off screen.
+    func otherAppClicked() {
+        releaseSummonedNotes()
+    }
+
     /// Puts back on screen any note that should be shown but is not: the panel exists, no filter and
     /// no full-screen Space is holding it off, yet the window is ordered out.
     ///
@@ -274,7 +311,9 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// development test hooks).
     func debugState() -> String {
         let screenSpaces = currentScreenSpaces()
-        return panels.values.map { panel -> String in
+        let types = Self.currentSpaceTypes().map { "\(Int($0.frame.minX)):\($0.type)\($0.isFullScreen ? "f" : "")" }
+            .joined(separator: ",")
+        return "types=[\(types)] " + panels.values.map { panel -> String in
             let id = panel.noteID.uuidString.prefix(4)
             let display = display(of: panel).map { d in
                 "desktop=\(screenSpaces?.showsDesktopSpace(d) == true ? 1 : 0)"
@@ -674,6 +713,21 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// What each display's current Space is, honouring the tests' stand-in when there is one.
     private func currentScreenSpaces() -> ScreenSpaces? {
         spaceProbe?() ?? Self.screenSpaces()
+    }
+
+    /// Every display's current Space type, straight from the window server (debug logging only).
+    private static func currentSpaceTypes() -> [(frame: CGRect, type: Int, isFullScreen: Bool)] {
+        guard let connect = SkyLight.connect, let copySpaces = SkyLight.copySpaces,
+              let displays = copySpaces(connect()) as? [[String: Any]]
+        else { return [] }
+        return displays.compactMap { display in
+            guard let space = display["Current Space"] as? [String: Any],
+                  let type = (space["type"] as? NSNumber)?.intValue,
+                  let uuid = display["Display Identifier"] as? String,
+                  let frame = displayFrame(uuid: uuid)
+            else { return nil }
+            return (frame, type, type == 4 && space["fs_wid"] != nil)
+        }
     }
 
     static func screenSpaces() -> ScreenSpaces? {

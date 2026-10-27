@@ -38,6 +38,41 @@ struct NoteControllerTests {
         #expect(c.tasks.map(\.indentLevel) == [0, 1, 1, 1])   // never dives deeper
     }
 
+    // MARK: - Folding
+
+    @Test("fold state toggles per heading, and folding writes nothing")
+    func foldingIsViewStateOnly() async throws {
+        let c = try await makeController()
+        c.addTask("Heading")
+        c.addTask("Child", level: 1)
+        let heading = try #require(c.tasks.first)
+        let before = c.tasks
+
+        c.toggleCollapse(heading)
+
+        #expect(c.isCollapsed(heading))
+        #expect(c.collapsedTaskIDs == [heading.id])
+        #expect(c.tasks == before, "a fold must not touch the stored tasks")
+        #expect(c.displayedTasks == before)
+
+        c.toggleCollapse(heading)
+        #expect(!c.isCollapsed(heading))
+        #expect(c.collapsedTaskIDs.isEmpty)
+    }
+
+    @Test("deleting a folded heading forgets its fold")
+    func deletingAFoldPrunesIt() async throws {
+        let c = try await makeController()
+        c.addTask("Heading")
+        c.addTask("Child", level: 1)
+        let heading = try #require(c.tasks.first)
+        c.toggleCollapse(heading)
+
+        c.delete(heading)
+
+        #expect(c.collapsedTaskIDs.isEmpty, "a stale id would render a future row folded from birth")
+    }
+
     @Test("committing an empty row removes it, and addSibling on it returns nil (ends the run)")
     func emptyEndsRun() async throws {
         let c = try await makeController()

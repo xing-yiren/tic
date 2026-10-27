@@ -60,6 +60,12 @@ final class NoteController {
     /// Bumped to ask the note's title field to take the keyboard (e.g. a freshly created note).
     private(set) var titleFocusRequest = 0
 
+    /// Headings whose subtasks the user has folded away — view state, never written to the database:
+    /// a folded subtask is still stored, counted and searchable. It lives on the controller rather
+    /// than in the view so it survives the note's view being torn down and rebuilt (the panel stays
+    /// up across theme/state changes), and it is not persisted, so a relaunch starts unfolded.
+    private(set) var collapsedTaskIDs: Set<TaskItem.ID> = []
+
     init(note: Note, database: AppDatabase) {
         self.noteID = note.id
         self.note = note
@@ -417,6 +423,28 @@ final class NoteController {
         applyStructural(TaskOutline.indenting(tasks, id: task.id))
     }
 
+    /// Whether the task's subtasks are currently folded away.
+    func isCollapsed(_ task: TaskItem) -> Bool { collapsedTaskIDs.contains(task.id) }
+
+    /// Folds a heading's subtasks away, or brings them back. Nothing is written: this only changes
+    /// what the list shows.
+    func toggleCollapse(_ task: TaskItem) {
+        if collapsedTaskIDs.contains(task.id) {
+            collapsedTaskIDs.remove(task.id)
+        } else {
+            collapsedTaskIDs.insert(task.id)
+        }
+        pruneCollapsedIDs()
+    }
+
+    /// Forgets folds of rows that no longer exist (deleted, cleared, or replaced by an observation).
+    /// Without it the set would grow for the life of the note — and an id reused for a new row would
+    /// show up folded from birth.
+    private func pruneCollapsedIDs() {
+        guard !collapsedTaskIDs.isEmpty else { return }
+        collapsedTaskIDs.formIntersection(tasks.lazy.map(\.id))
+    }
+
     /// Promotes the task one level out, carrying its subtasks along. No-op when already top-level.
     func outdent(_ task: TaskItem) {
         applyStructural(TaskOutline.outdenting(tasks, id: task.id))
@@ -460,6 +488,7 @@ final class NoteController {
         let recomputed = TaskOutline.recomputingAncestors(survivors, ancestors: chain, now: Date())
         let completionUpdates = completionChanges(from: survivors, to: recomputed)
         applyStructural(TaskOutline.normalizedLevels(recomputed), deleteIds: deleteIds)
+        pruneCollapsedIDs()
         if !completionUpdates.isEmpty {
             Task { [db] in try? await db.updateTaskCompletion(completionUpdates) }
         }
@@ -474,6 +503,7 @@ final class NoteController {
         guard !doneIds.isEmpty else { return }
         let survivors = TaskOutline.normalizedLevels(tasks.filter { !$0.isDone })
         applyStructural(survivors, deleteIds: doneIds, reorder: true)
+        pruneCollapsedIDs()
     }
 
     /// Moves the task with `id` — and its whole subtree — so it lands at `insertionIndex` (an index

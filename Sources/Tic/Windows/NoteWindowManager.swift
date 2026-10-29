@@ -140,11 +140,21 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     ///
     /// It says nothing about the Space itself: if macOS has already switched to the desktop (a Dock
     /// click spends a moment activating), the full-screen Space is no longer the current one and a
-    /// re-assert can't bring it back. Then the notes stay summoned and off the desktop, and the
-    /// user's next click into the full-screen app ends it — as it does after a menu-bar summon.
+    /// re-assert can't bring it back — that has to be caught before anything activates Tic, at the
+    /// Dock click itself (`NoteWindowManager.activateReturningToFullScreen`).
+    ///
+    /// `TIC_FS_DEBUG=1` logs which Space each display is on, and what Tic was called for, so a
+    /// report of "it still jumps to the desktop" can be diagnosed from the log alone.
     func returnToSummonedFullScreenSpace() {
         let summoned = panels.values.filter { summonedWhileFullScreen.contains($0.noteID) }
         guard !summoned.isEmpty else { return }
+        // What it is working against, so a log that is reported after the fact
+        // (`TIC_FS_DEBUG=1` makes the 1 Hz sweep print too) can be read without guessing.
+        let spaceTypes = Self.currentSpaceTypes()
+            .map { "\($0.type)\($0.isFullScreen ? "f" : "")" }.joined(separator: ",")
+        let active = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
+        NSLog("[Tic] dockClick: full=\(fullScreenDisplays.count) types=[\(spaceTypes)] "
+              + "active=\(active) summoned=\(summoned.count)")
         // Captured by value: `weak` on an array is pointless, and the panels themselves are held by
         // the manager's `panels`, not by this closure.
         NSApp.activate()
@@ -153,7 +163,24 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
                 if panel.isPinned { panel.joinFullScreenSpace() } else { panel.showAsUserCanvas() }
             }
         }
-        NSLog("[Tic] Dock click during a full-screen Space: re-showed \(summoned.count) summoned note(s) onto it")
+        NSLog("[Tic] dockClick: re-showed \(summoned.count) summoned note(s)")
+    }
+
+    /// Brings Tic forward from its Dock icon, in a way that can land back on the full-screen Space
+    /// the click left.
+    ///
+    /// Two steps, because neither one alone is enough:
+    /// 1. Activate *without* the app-raising prompt. The Dock's own route goes through asking the
+    ///    window server to bring Tic forward, and with nothing of Tic's on the full-screen Space yet
+    ///    that switches the display to Tic's ordinary desktop Space. A plain `activate()` on a
+    ///    non-activating app is how this app already puts a pinned note into a full-screen Space
+    ///    (`NotePanel.joinFullScreenSpace`, and `focusNoteByID`'s `activate(ignoringOtherApps: true)`
+    ///    comment), so the Space the user is looking at should survive it.
+    /// 2. Then re-assert the summoned notes, which orders them onto whichever Space is current —
+    ///    putting Tic's windows on the full-screen Space rather than switching away from it.
+    func activateReturningToFullScreen() {
+        NSApp.activate()
+        returnToSummonedFullScreenSpace()
     }
 
     /// Whether the notes a summon put on the full-screen Space are still wanted.

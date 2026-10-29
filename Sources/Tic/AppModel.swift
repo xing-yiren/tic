@@ -409,8 +409,7 @@ final class AppModel {
     /// (`windows.returnToSummonedFullScreenSpace`).
     func dockIconClicked() {
         windows.noteUserShow()
-        windows.returnToSummonedFullScreenSpace()
-        NSApp.activate()
+        windows.activateReturningToFullScreen()
     }
 
     /// Bring all open notes to the front.

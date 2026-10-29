@@ -122,8 +122,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Click the Dock icon: the same "the user reached for Tic" as the menu-bar icon — while
     /// another app is full screen, the notes stay on screen over it — and, with no notes on screen,
     /// the Overview, so the app never looks dead after every note was closed.
+    ///
+    /// Unlike the menu bar, a Dock click gets here *after* macOS has activated the app, so the notes
+    /// have to be put back onto the full-screen Space (see `AppModel.dockIconClicked`).
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        AppModel.shared.noteUserReachedForTic()
+        AppModel.shared.dockIconClicked()
         if AppModel.shared.windows.openCount == 0 { AppModel.shared.openOverview() }
         return true
     }

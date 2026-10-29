@@ -515,6 +515,30 @@ struct NoteWindowManagerFullScreenTests {
         #expect(manager.summonedWhileFullScreen.isEmpty)
     }
 
+    @Test("after a Dock click, going back to the app still ends the summon")
+    func dockClickKeepsTheClickAwayRelease() throws {
+        // The Dock path puts the notes onto the full-screen Space from a deferred re-order
+        // (`returnToSummonedFullScreenSpace`); the way out must stay the same as the menu bar's:
+        // the user clicking back into the full-screen app hides them again.
+        let manager = try makeManager()
+        manager.fullScreenProbe = { [secondDisplay] }
+        let panel = RecordingPanel(pinned: false, frame: noteOnSecond)
+        open(manager, panel)
+        manager.fullScreenProbe = { [] }
+        manager.applyFullScreenPolicy()   // the full-screen Space is gone: nothing to return to
+
+        manager.returnToSummonedFullScreenSpace()
+        #expect(manager.summonedWhileFullScreen.isEmpty)
+
+        manager.fullScreenProbe = { [secondDisplay] }
+        manager.applyFullScreenPolicy()   // the app is full screen again
+        manager.noteUserShow()
+        #expect(panel.userSummoned)
+        manager.otherAppClicked()
+        #expect(!panel.userSummoned)
+        #expect(panel.suppressedByFullScreen)
+    }
+
     @Test("a click with nothing summoned changes nothing")
     func clickWithoutASummonIsHarmless() throws {
         let manager = try makeManager()

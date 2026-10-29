@@ -130,6 +130,32 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
         markSummoned(onFullScreenDisplaysOnly: true)
     }
 
+    /// When the click that summoned the notes was the Dock icon, the app has been brought forward
+    /// but *not* the full-screen Space: macOS shows Tic's ordinary Space instead, so the full-screen
+    /// app — and the notes that were just put over it — are not on screen at all.
+    ///
+    /// The fix is the same trick a pinned note uses to follow another app into full screen
+    /// (`NotePanel.joinFullScreenSpace`): re-assert the panel while the full-screen Space is current
+    /// and it is ordered *onto that Space*. Deferred a tick so the summon's ordering has landed.
+    ///
+    /// It says nothing about the Space itself: if macOS has already switched to the desktop (a Dock
+    /// click spends a moment activating), the full-screen Space is no longer the current one and a
+    /// re-assert can't bring it back. Then the notes stay summoned and off the desktop, and the
+    /// user's next click into the full-screen app ends it — as it does after a menu-bar summon.
+    func returnToSummonedFullScreenSpace() {
+        let summoned = panels.values.filter { summonedWhileFullScreen.contains($0.noteID) }
+        guard !summoned.isEmpty else { return }
+        // Captured by value: `weak` on an array is pointless, and the panels themselves are held by
+        // the manager's `panels`, not by this closure.
+        NSApp.activate()
+        DispatchQueue.main.async {
+            for panel in summoned where panel.userSummoned {
+                if panel.isPinned { panel.joinFullScreenSpace() } else { panel.showAsUserCanvas() }
+            }
+        }
+        NSLog("[Tic] Dock click during a full-screen Space: re-showed \(summoned.count) summoned note(s) onto it")
+    }
+
     /// Whether the notes a summon put on the full-screen Space are still wanted.
     ///
     /// Only two things end a summon, and both mean the user has truly gone back to the full-screen
@@ -449,7 +475,7 @@ final class NoteWindowManager: NSObject, NSWindowDelegate {
     /// report itself as an ordinary one for a tick while it's still animating (or while the system
     /// rolls back an attempted switch), and a note restored on that tick would sit over the
     /// full-screen app.
-    func setFullScreenDisplays(_ displays: [CGRect]) {
+    private func setFullScreenDisplays(_ displays: [CGRect]) {
         // Whatever "full screen" means here, it can't have arrived *silently*: on every tick this
         // manager re-orders every unpinned note off screen, which would turn a note the user closed
         // back into one on screen when the full-screen app goes away. If the panel is gone, that

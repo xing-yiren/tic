@@ -125,7 +125,7 @@ final class AppModel {
         center.addObserver(forName: NSNotification.Name("dev.tic.dockClick"), object: nil, queue: .main) { _ in
             Task { @MainActor in
                 // Exactly what a Dock click does (see `AppDelegate.applicationShouldHandleReopen`).
-                AppModel.shared.noteUserReachedForTic()
+                AppModel.shared.dockIconClicked()
                 AppModel.shared.logTestHook("dockClick")
             }
         }
@@ -395,6 +395,21 @@ final class AppModel {
         // non-activating panel only becomes key in an active app, so the user could see the list
         // but not type in it.
         windows.noteUserShow()
+        NSApp.activate()
+    }
+
+    /// The same, for a click on Tic's Dock icon.
+    ///
+    /// A Dock click reaches the app *through activation*: macOS activates Tic first and only then
+    /// asks `AppDelegate.applicationShouldHandleReopen` — and with no Tic window on the full-screen
+    /// Space yet, that activation switches to Tic's ordinary desktop Space, taking the user off the
+    /// full-screen app before there is anything to summon `noteUserReachedForTic` for. So the rushed
+    /// click of the menu-bar item (`noteUserReachedForTic`, which summons *first*) is still what is
+    /// tried, and then the notes are put back onto the full-screen Space the click left
+    /// (`windows.returnToSummonedFullScreenSpace`).
+    func dockIconClicked() {
+        windows.noteUserShow()
+        windows.returnToSummonedFullScreenSpace()
         NSApp.activate()
     }
 

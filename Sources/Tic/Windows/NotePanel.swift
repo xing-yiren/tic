@@ -272,14 +272,14 @@ class NotePanel: NSPanel {
 
     /// Back to the resting level after the manager lifts a summon — unless the pin says otherwise
     /// (or the note happens to be mid-show; `showAtTemporaryFloat` handles that itself).
-    /// Which end of the window list a re-shown note joins. An unpinned note goes back *below* the
-    /// others, so showing it again can't lift it over a pinned note.
-    var restoreOrdering: NSWindow.OrderingMode { orderingWhileHidden }
-
     func restToNormalLevelIfUnpinned() {
         guard !isPinned else { return }
         level = .normal
     }
+
+    /// Which end of the window list a re-shown note joins. An unpinned note goes back *below* the
+    /// others, so showing it again can't lift it over a pinned note.
+    var restoreOrdering: NSWindow.OrderingMode { orderingWhileHidden }
 
     /// The level a summoned note shows at — formally the "screen-saver" level (ABOVE the app's
     /// full-screen windows, which live just below it), named for here for what it means: a surface

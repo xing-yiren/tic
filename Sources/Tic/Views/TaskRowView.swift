@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// A single checklist row. Shows the task as rendered inline **Markdown** (bold, *italic*,
@@ -188,7 +189,7 @@ struct TaskRowView: View {
     }
 
     /// The fold affordance: a chevron for a row with subtasks (pointing down when open, right when
-    /// folded, with a count of what is folded away), an empty slot of the same width otherwise.
+    /// folded), an empty slot of the same width otherwise.
     private var disclosure: some View {
         Group {
             if hasChildren, let onToggleCollapse {
@@ -383,9 +384,21 @@ struct TaskRowView: View {
                 .fixedSize(horizontal: false, vertical: true)   // wrap + grow, don't truncate
                 .contentShape(Rectangle())
                 // Clicking a heading folds its subtasks away (and back): the row's own text is the
-                // biggest target there is, and on a heading it is what the user points at. A leaf
-                // still opens for editing, as before.
-                .onTapGesture { if hasChildren { onToggleCollapse?() } else { beginEditing() } }
+                // biggest target there is, and on a heading it is what the user points at. A folded
+                // heading stays clickable even if it were somehow drawn without children, so the way
+                // back never depends on the fold's own bookkeeping. ⌥-click edits the heading's text,
+                // which a fold-click would otherwise put out of reach.
+                .onTapGesture {
+                    if hasChildren || isCollapsed {
+                        if NSEvent.modifierFlags.contains(.option) {
+                            beginEditing()
+                        } else {
+                            onToggleCollapse?()
+                        }
+                    } else {
+                        beginEditing()
+                    }
+                }
         }
     }
 

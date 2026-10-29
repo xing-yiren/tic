@@ -273,12 +273,14 @@ struct NoteView: View {
 
     // MARK: - Folding
 
-    /// Whether `task` has subtasks, as displayed. Computed over the *unfiltered* displayed list: a
-    /// folded row's children are still there, which is exactly what makes it foldable (and keeps its
-    /// chevron pointing the same way while folded).
-    private func hasSubtasks(_ task: TaskItem, in shown: [TaskItem]) -> Bool {
-        guard let index = shown.firstIndex(where: { $0.id == task.id }) else { return false }
-        return TaskOutline.hasChildren(shown, at: index)
+    /// Whether `task` has subtasks. Computed over the displayed list *before* folding is applied: a
+    /// folded row's children are exactly what the fold is hiding, so asking the folded list would say
+    /// "no children" — and the row would lose the very chevron that brings them back, leaving the
+    /// subtasks unreachable until the note was reopened.
+    private func hasSubtasks(_ task: TaskItem) -> Bool {
+        let display = controller.displayedTasks
+        guard let index = display.firstIndex(where: { $0.id == task.id }) else { return false }
+        return TaskOutline.hasChildren(display, at: index)
     }
 
     /// Folds a heading's subtasks away, or brings them back.
@@ -327,8 +329,8 @@ struct NoteView: View {
         return ActiveAdd(afterIndex: afterIndex, level: root.indentLevel + 1, parentID: root.id)
     }
 
-    /// `shown` is the list as displayed (folds applied): it answers "does this row have subtasks?"
-    /// and "is it folded?", which are properties of what the user sees rather than of the store.
+    /// `shown` is the list as displayed (folds applied). "Does this row have subtasks at all" comes
+    /// from the pre-fold list (see `hasSubtasks`), so a folded row keeps its chevron.
     private func row(_ task: TaskItem, among shown: [TaskItem]) -> some View {
         let dragging = draggingTaskID == task.id
         return TaskRowView(
@@ -346,7 +348,7 @@ struct NoteView: View {
             onHoverChanged: { hovering in
                 if hovering { withAnimation(.easeInOut(duration: 0.12)) { activeSectionID = sectionRootID(of: task) } }
             },
-            hasChildren: hasSubtasks(task, in: shown),
+            hasChildren: hasSubtasks(task),
             isCollapsed: controller.isCollapsed(task),
             onToggleCollapse: { toggleCollapse(task) },
             image: controller.imageCrops[task.id].map { crop in

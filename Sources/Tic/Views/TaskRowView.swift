@@ -189,7 +189,9 @@ struct TaskRowView: View {
     }
 
     /// The fold affordance: a chevron for a row with subtasks (pointing down when open, right when
-    /// folded), an empty slot of the same width otherwise.
+    /// folded), an empty slot of the same width otherwise. This is the *only* thing that folds a
+    /// heading — the task's text always edits instead, or the row's own text would be the one part
+    /// of a heading that could not be clicked into (see `content`).
     private var disclosure: some View {
         Group {
             if hasChildren, let onToggleCollapse {
@@ -383,22 +385,11 @@ struct TaskRowView: View {
                 .opacity(task.isDone ? 0.85 : 1)
                 .fixedSize(horizontal: false, vertical: true)   // wrap + grow, don't truncate
                 .contentShape(Rectangle())
-                // Clicking a heading folds its subtasks away (and back): the row's own text is the
-                // biggest target there is, and on a heading it is what the user points at. A folded
-                // heading stays clickable even if it were somehow drawn without children, so the way
-                // back never depends on the fold's own bookkeeping. ⌥-click edits the heading's text,
-                // which a fold-click would otherwise put out of reach.
-                .onTapGesture {
-                    if hasChildren || isCollapsed {
-                        if NSEvent.modifierFlags.contains(.option) {
-                            beginEditing()
-                        } else {
-                            onToggleCollapse?()
-                        }
-                    } else {
-                        beginEditing()
-                    }
-                }
+                // The text always edits — a heading's included. Folding is the chevron's job alone
+                // (see `disclosure`): the text is where the user points to change what a task says,
+                // and on a heading that is the common case, so spending the click on a fold made the
+                // row's own text the one thing you could not click into.
+                .onTapGesture { beginEditing() }
         }
     }
 
